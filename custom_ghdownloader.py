@@ -10,8 +10,8 @@ import xbmcvfs
 # ==============================================================================
 # HIER DEINE DATEN ANPASSEN
 # ==============================================================================
-GITHUB_USER = "jamo1811"       # Trage hier deinen GitHub-Benutzernamen ein
-GITHUB_REPO = "my-cumination-sites" # Trage hier deinen Repo-Namen ein
+GITHUB_USER = "Jamo1811"       # Trage hier deinen GitHub-Benutzernamen ein
+GITHUB_REPO = "My_Cumination_Sites"  # Trage hier deinen Repo-Namen ein
 BRANCH = "main"                     
 
 # Füge hier deinen kopierten Schlüssel ein:
