@@ -195,23 +195,17 @@ def play_video(video_url):
                     break
 
         if stream_url:
-            # Maskiere das + Zeichen im URL-Query-String
+            # Maskiere das + Zeichen im Query-String
             if '?' in stream_url:
                 base_part, query_part = stream_url.split('?', 1)
                 query_part = query_part.replace('+', '%2B')
                 stream_url = f"{base_part}?{query_part}"
 
-            # Kodi Header Formatierung
-            headers_payload = f"User-Agent={urllib.parse.quote(HEADERS['User-Agent'])}&Referer={urllib.parse.quote(video_url)}"
+            play_item = xbmcgui.ListItem(path=stream_url)
             
-            cookies_str = "; ".join([f"{c.name}={c.value}" for c in session.cookies])
-            if cookies_str:
-                headers_payload += f"&Cookie={urllib.parse.quote(cookies_str)}"
-                
-            final_stream_url = f"{stream_url}|{headers_payload}"
-            
-            play_item = xbmcgui.ListItem(path=final_stream_url)
-            play_item.setProperty('IsPlayable', 'true')
+            # Nutze Inputstream Adaptive für korrekte Header-Übergabe
+            play_item.setProperty('inputstream', 'inputstream.adaptive')
+            play_item.setProperty('inputstream.adaptive.stream_headers', f"User-Agent={HEADERS['User-Agent']}&Referer={video_url}")
             play_item.setMimeType('video/mp4')
 
             xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
