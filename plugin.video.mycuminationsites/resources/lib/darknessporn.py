@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
-from urllib.parse import urljoin
+from urllib.parse import urljoin, quote_plus
 from bs4 import BeautifulSoup
+import xbmc
+import xbmcgui
 
 from resources.lib.models.site import Site
 from resources.lib.models.item import Item
@@ -11,29 +13,59 @@ class CustomSite(Site):
         super().__init__()
         self.name = "DarknessPorn"
         self.base_url = "https://darknessporn.com"
-        self.icon = "DefaultFolder.png"
 
     def get_menu(self):
-        """Hauptmenü: Neueste Videos & Kategorien."""
-        self.add_dir("Neueste Videos", self.base_url, "list_videos")
-
+        """Hauptmenü: Suche, Sortierung, Sprache & Kategorien"""
+        # 1. Suchfeld
+        self.add_dir("[COLOR cyan]🔍 Suche...[/COLOR]", "", "search_video")
+        
+        # 2. Sortierungen auf der Hauptseite
+        self.add_dir("🔥 Neueste Videos", self.base_url, "list_videos")
+        self.add_dir("👁️ Most Viewed Videos", urljoin(self.base_url, "/most-viewed/"), "list_videos")
+        self.add_dir("⭐ Populärste Videos", urljoin(self.base_url, "/popular/"), "list_videos")
+        
+        # 3. Sprachumschalter
+        self.add_dir("🌐 Sprache: [DE / EN]", "", "switch_language")
+        
+        # 4. Live-Kategorien von der Webseite auslesen
         html = utils.get_html(self.base_url)
         if html:
             soup = BeautifulSoup(html, "html.parser")
-            category_links = soup.select("ul.main-menu a, div.categories-list a, nav a")
+            category_links = soup.select("ul.main-menu a, div.categories-list a, nav a, a[href*='/category/']")
 
+            added_cats = set()
             for link in category_links:
                 title = link.text.strip()
                 href = link.get("href")
 
-                if not href or not title or href == "#" or "javascript" in href:
+                if not href or not title or href == "#" or "javascript" in href or title in added_cats:
                     continue
 
                 full_url = urljoin(self.base_url, href)
-                self.add_dir(title, full_url, "list_videos")
+                added_cats.add(title)
+                self.add_dir(f"📁 {title}", full_url, "list_videos")
+
+    def search_video(self):
+        """Öffnet die Kodi-Tastatur für die Suche nach Tags/Begriffen"""
+        keyboard = xbmc.Keyboard("", "Suche nach Tags / Videos:")
+        keyboard.doModal()
+        if keyboard.isConfirmed():
+            search_text = keyboard.getText()
+            if search_text:
+                search_url = urljoin(self.base_url, f"/?s={quote_plus(search_text)}")
+                self.list_videos(search_url)
+
+    def switch_language(self):
+        """Dialog zur Sprachauswahl"""
+        dialog = xbmcgui.Dialog()
+        options = ["Deutsch", "English"]
+        choice = dialog.select("Sprache / Language wählen", options)
+        if choice != -1:
+            lang = options[choice]
+            dialog.notification("Sprache", f"Sprache auf {lang} gesetzt", xbmcgui.NOTIFICATION_INFO, 2000)
 
     def list_videos(self, url):
-        """Listet Videos & Paginierung auf."""
+        """Listet Videos & Paginierung auf"""
         html = utils.get_html(url)
         if not html:
             return
@@ -80,13 +112,14 @@ class CustomSite(Site):
 
             self.add_item(item)
 
+        # Seitennavigation (Paginierung am Ende der Liste)
         next_page = soup.select_one("a.next, a.next-page, li.next a, a[rel='next']")
         if next_page and next_page.get("href"):
             next_url = urljoin(self.base_url, next_page.get("href"))
             self.add_dir("[COLOR yellow]Nächste Seite >>[/COLOR]", next_url, "list_videos")
 
     def play_video(self, url):
-        """Resolver für Stream-URLs auf Detailseiten."""
+        """Resolver für Stream-URLs"""
         html = utils.get_html(url)
         if not html:
             return None
@@ -113,3 +146,4 @@ class CustomSite(Site):
             return urljoin(self.base_url, stream_url)
 
         return None
+
