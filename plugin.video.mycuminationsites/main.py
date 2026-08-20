@@ -1,5 +1,6 @@
 import sys
 import re
+import base64
 import urllib.parse
 import requests
 from bs4 import BeautifulSoup
@@ -7,7 +8,6 @@ import xbmc
 import xbmcgui
 import xbmcplugin
 
-# Prüfe, ob resolveurl installiert ist
 try:
     import resolveurl
     HAS_RESOLVEURL = True
@@ -17,9 +17,11 @@ except ImportError:
 HANDLE = int(sys.argv[1]) if len(sys.argv) > 1 else -1
 BASE_URL = sys.argv[0] if len(sys.argv) > 0 else ''
 
+USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Accept': '*/*',
+    'User-Agent': USER_AGENT,
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7',
 }
 
@@ -37,6 +39,32 @@ def get_params():
                 if len(splitparams) == 2:
                     param[splitparams[0]] = urllib.parse.unquote_plus(splitparams[1])
     return param
+
+def unpack_js(packed_code):
+    try:
+        pattern = r"\}\s*\('(.*)',\s*(\d+),\s*(\d+),\s*'(.*)'\.split\('\|'\)"
+        match = re.search(pattern, packed_code)
+        if not match:
+            return ""
+        
+        payload, radix, count, symtab = match.groups()
+        radix = int(radix)
+        count = int(count)
+        symtab = symtab.split('|')
+
+        def replace_word(m):
+            word = m.group(0)
+            try:
+                idx = int(word, radix) if radix <= 36 else int(word)
+            except ValueError:
+                idx = -1
+            if idx >= 0 and idx < len(symtab) and symtab[idx]:
+                return symtab[idx]
+            return word
+
+        return re.sub(r'\b\w+\b', replace_word, payload)
+    except Exception:
+        return ""
 
 def main_menu():
     items = [
@@ -88,7 +116,6 @@ def list_videos(category_url):
         session = requests.Session()
         response = session.get(category_url, headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        count = 0
         added_urls = set()
 
         articles = soup.find_all(['article', 'div'], class_=re.compile(r'post|video|item'))
@@ -118,7 +145,6 @@ def list_videos(category_url):
                 
                 li.setProperty('IsPlayable', 'true')
                 xbmcplugin.addDirectoryItem(handle=HANDLE, url=url, listitem=li, isFolder=False)
-                count += 1
 
         next_page_tag = soup.find('a', class_=re.compile(r'next|pagination-next'), href=True) or \
                         soup.find('a', string=re.compile(r'Nächste|Next|»|>', re.I), href=True)
@@ -134,66 +160,71 @@ def list_videos(category_url):
         xbmcgui.Dialog().notification('Fehler', str(e), xbmcgui.NOTIFICATION_ERROR)
     xbmcplugin.endOfDirectory(HANDLE)
 
+def extract_stream(session, page_url):
+    res = session.get(page_url, timeout=10)
+    html = res.text
+
+    if "eval(function(p,a,c,k,e,d)" in html:
+        unpacked = unpack_js(html)
+        matches = re.findall(r'(https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*)', unpacked)
+        for m in matches:
+            if not any(x in m.lower() for x in ['preview', 'trailer', 'short', 'thumb']):
+                return m.replace('\\/', '/')
+
+    matches = re.findall(r'(https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*)', html)
+    for m in matches:
+        clean = m.replace('\\/', '/')
+        if not any(x in clean.lower() for x in ['preview', 'trailer', 'short', 'thumb']):
+            return clean
+
+    soup = BeautifulSoup(html, 'html.parser')
+    for iframe in soup.find_all('iframe', src=True):
+        src = iframe['src']
+        if not src.startswith('http'):
+            src = urllib.parse.urljoin(page_url, src)
+
+        if HAS_RESOLVEURL and resolveurl.HostedMediaFile(src).valid_url():
+            resolved = resolveurl.resolve(src)
+            if resolved:
+                return resolved
+
+        try:
+            sub = extract_stream(session, src)
+            if sub:
+                return sub
+        except Exception:
+            pass
+
+    return None
+
 def play_video(video_url):
     try:
         session = requests.Session()
         session.headers.update(HEADERS)
         session.headers['Referer'] = video_url
 
-        res = session.get(video_url, timeout=15)
-        soup = BeautifulSoup(res.text, 'html.parser')
-
-        stream_url = None
-
-        # 1. Suche nach iFrames (viele Erwachsenen-Seiten betten externe Hoster ein)
-        iframe_urls = []
-        for iframe in soup.find_all('iframe', src=True):
-            src = iframe['src']
-            if not src.startswith('http'):
-                src = urllib.parse.urljoin('https://darknessporn.com/', src)
-            iframe_urls.append(src)
-
-        # Versuch mit ResolveURL (falls externe Hoster wie Dood, Streamtape etc. eingebettet sind)
-        if HAS_RESOLVEURL:
-            for url in iframe_urls:
-                if resolveurl.HostedMediaFile(url).valid_url():
-                    stream_url = resolveurl.resolve(url)
-                    break
-
-        # 2. Falls kein Hoster aufgelöst wurde: HTML5 Video-Tags scannen
-        if not stream_url:
-            for tag in soup.find_all(['video', 'source']):
-                src = tag.get('src') or tag.get('data-src') or ''
-                if src and ('.mp4' in src.lower() or '.m3u8' in src.lower()):
-                    stream_url = src
-                    break
-
-        # 3. Falls immer noch nichts: Direkte Video-URLs aus Script-Blöcken isolieren
-        if not stream_url:
-            matches = re.findall(r'(https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*)', res.text)
-            for m in matches:
-                if not any(x in m.lower() for x in ['preview', 'trailer', 'short', 'thumb', 'sample']):
-                    stream_url = m.replace('\\/', '/')
-                    break
+        stream_url = extract_stream(session, video_url)
 
         if stream_url:
-            # Baue Kodi-Header als Suffix an die Stream-URL an
-            headers_pipe = f"User-Agent={urllib.parse.quote(HEADERS['User-Agent'])}&Referer={urllib.parse.quote(video_url)}"
-            final_url = f"{stream_url}|{headers_pipe}" if '|' not in stream_url else stream_url
+            # Reiner Stream ohne Pipe-Header für maximale Kodi-Kompatibilität
+            play_item = xbmcgui.ListItem(path=stream_url)
+            
+            # Übermittle Header direkt an den Kodi-Mediaplayer
+            play_item.setProperty('http-header', f'User-Agent={USER_AGENT}&Referer={video_url}')
 
-            play_item = xbmcgui.ListItem(path=final_url)
             if '.m3u8' in stream_url.lower():
                 play_item.setMimeType('application/vnd.apple.mpegurl')
+                play_item.setProperty('inputstream', 'inputstream.adaptive')
+                play_item.setProperty('inputstream.adaptive.manifest_type', 'hls')
             else:
                 play_item.setMimeType('video/mp4')
 
             xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
         else:
-            xbmcgui.Dialog().notification('Fehler', 'Kein abspielbarer Stream gefunden', xbmcgui.NOTIFICATION_ERROR)
+            xbmcgui.Dialog().notification('Fehler', 'Kein Stream gefunden', xbmcgui.NOTIFICATION_ERROR)
             xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
 
     except Exception as e:
-        xbmc.log(f"[MyCumination] Fehler beim Abspielen: {str(e)}", level=xbmc.LOGERROR)
         xbmcgui.Dialog().notification('Fehler', str(e), xbmcgui.NOTIFICATION_ERROR)
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
 
