@@ -2,6 +2,7 @@ import sys
 import re
 import urllib.request
 import urllib.parse
+import json
 import xbmc
 import xbmcgui
 import xbmcplugin
@@ -13,94 +14,65 @@ base_url = sys.argv[0]
 addon = xbmcaddon.Addon()
 addon_name = addon.getAddonInfo('name')
 
-# WICHTIG: User-Agent OHNE Leerzeichen (oder encoded)
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 REFERER = 'https://darknessporn.com/'
 
 # ==================== HILFSFUNKTIONEN ====================
 
+def log(msg):
+    xbmc.log(f'{addon_name}: {msg}', xbmc.LOGINFO)
+
 def fetch_html(url):
-    """Lädt eine HTML-Seite"""
     req = urllib.request.Request(url)
     req.add_header('User-Agent', USER_AGENT)
     req.add_header('Referer', REFERER)
     try:
-        with urllib.request.urlopen(req, timeout=10) as response:
+        with urllib.request.urlopen(req, timeout=15) as response:
             return response.read().decode('utf-8', errors='ignore')
     except Exception as e:
-        xbmc.log(f'{addon_name}: Fehler: {e}', xbmc.LOGERROR)
+        log(f'Fehler beim Laden: {e}')
         return None
 
+def extract_all_urls(html):
+    """Findet ALLE URLs in der Seite"""
+    urls = []
+    # Suche nach iframe
+    iframes = re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.IGNORECASE)
+    urls.extend(iframes)
+    
+    # Suche nach Video-URLs
+    videos = re.findall(r'(https?://[^\s"\']+\.(?:m3u8|mp4|ts)[^\s"\']*)', html, re.IGNORECASE)
+    urls.extend(videos)
+    
+    # Suche nach JavaScript-Variablen
+    js_urls = re.findall(r'(?:file|src|video_url|url)\s*[:=]\s*["\']([^"\']+\.(?:m3u8|mp4)[^"\']*)["\']', html, re.IGNORECASE)
+    urls.extend(js_urls)
+    
+    # Suche nach embed-Links
+    embeds = re.findall(r'(https?://[^\s"\']+/(?:embed|e|v)/[^\s"\']+)', html, re.IGNORECASE)
+    urls.extend(embeds)
+    
+    return list(set(urls))  # Doppelte entfernen
+
 def try_resolveurl(video_url):
-    """Versucht ResolveURL (falls installiert)"""
     try:
         from resolveurl import resolveurl
         resolved = resolveurl.resolve(video_url)
         if resolved:
+            log(f'ResolveURL erfolgreich: {resolved}')
             return resolved
-    except ImportError:
-        xbmc.log(f'{addon_name}: ResolveURL nicht gefunden', xbmc.LOGINFO)
     except:
         pass
-    return video_url
-
-# ==================== EXTRAKTIONS-LOGIK (MUSS ANGEPASST WERDEN!) ====================
-
-def extract_video_url_from_page(html):
-    """
-    Extrahiert die eigentliche Video-URL aus dem HTML der Seite.
-    DAS MUSST DU AN DIE AKTUELLE SEITE ANPASSEN!
-    """
-    # 1. Versuche iframe zu finden (häufig bei eingebetteten Videos)
-    iframe_match = re.search(r'<iframe[^>]*src=["\']([^"\']+)["\']', html, re.IGNORECASE)
-    if iframe_match:
-        return iframe_match.group(1)
-    
-    # 2. Versuche direkte Video-URL (mp4, m3u8, etc.)
-    video_match = re.search(r'(https?://[^\s"\']+\.(?:mp4|m3u8|ts)[^\s"\']*)', html, re.IGNORECASE)
-    if video_match:
-        return video_match.group(1)
-    
-    # 3. Versuche JavaScript-Variable (z.B. file: "https://...")
-    js_match = re.search(r'(?:file|src|video_url)\s*[:=]\s*["\']([^"\']+)["\']', html, re.IGNORECASE)
-    if js_match:
-        return js_match.group(1)
-    
     return None
 
-def extract_video_url_from_iframe(iframe_url):
-    """
-    Lädt die iframe-Seite (vom Hoster) und extrahiert dort die Video-URL.
-    DAS MUSST DU AN DEN HOSTER ANPASSEN!
-    """
-    html = fetch_html(iframe_url)
-    if not html:
-        return None
-    
-    # Versuche verschiedene Patterns (häufig bei Hostern)
-    patterns = [
-        r'(?:file|src|video)\s*[:=]\s*["\']([^"\']+\.(?:mp4|m3u8))["\']',
-        r'<video[^>]+src=["\']([^"\']+)["\']',
-        r'data-video-url=["\']([^"\']+)["\']',
-        r'{"file":"([^"]+)"}',
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, html, re.IGNORECASE)
-        if match:
-            return match.group(1)
-    
-    return None
-
-# ==================== MENÜ-STRUKTUR ====================
+# ==================== VIDEO-LISTE ====================
 
 def show_video_list():
-    """Zeigt eine Liste von Videos (hier als Beispiel)"""
-    # In der Praxis: Lade die Hauptseite und parse die Videolinks
-    # Beispiel: 3 statische Einträge zum Testen
+    """Zeigt eine Liste von Videos"""
+    # Ersetze diese URLs mit echten Links von darknessporn.com
     videos = [
-        {'title': 'Test Video 1', 'url': 'https://darknessporn.com/video/123'},
-        {'title': 'Test Video 2', 'url': 'https://darknessporn.com/video/456'},
+        {'title': '🔴 Defloration Real Teen', 'url': 'https://darknessporn.com/56493-defloration-real-teen-young-teenies/'},
+        {'title': '🔴 Test Video 2', 'url': 'https://darknessporn.com/anderes-video/'},
     ]
     
     for video in videos:
@@ -114,61 +86,71 @@ def show_video_list():
 # ==================== ABSPIELEN ====================
 
 def play_video(video_url):
-    """Spielt ein Video mit korrekten Headern ab"""
-    xbmc.log(f'{addon_name}: Versuche URL: {video_url}', xbmc.LOGINFO)
+    log(f'Starte mit URL: {video_url}')
     
-    # 1. Zuerst ResolveURL versuchen
-    final_url = try_resolveurl(video_url)
-    
-    # 2. Wenn ResolveURL nichts gefunden hat: Selbst scrapen
-    if final_url == video_url:
-        xbmc.log(f'{addon_name}: ResolveURL fehlgeschlagen, scrape selbst', xbmc.LOGINFO)
-        html = fetch_html(video_url)
-        if html:
-            # Zuerst in der Seite selbst suchen
-            found_url = extract_video_url_from_page(html)
-            if found_url:
-                # Wenn es ein iframe ist, diesen ebenfalls laden
-                if 'iframe' in found_url.lower() or found_url.startswith('//'):
-                    final_url = extract_video_url_from_iframe(found_url)
-                else:
-                    final_url = found_url
-            else:
-                xbmcgui.Dialog().ok(addon_name, 'Keine Video-URL in der Seite gefunden')
-                return
-    
-    if not final_url:
-        xbmcgui.Dialog().ok(addon_name, 'Video-URL konnte nicht aufgelöst werden')
+    # 1. Seite laden
+    html = fetch_html(video_url)
+    if not html:
+        xbmcgui.Dialog().ok(addon_name, 'Seite konnte nicht geladen werden')
         return
     
-    xbmc.log(f'{addon_name}: Finale URL: {final_url}', xbmc.LOGINFO)
+    # 2. Alle URLs aus der Seite extrahieren
+    found_urls = extract_all_urls(html)
+    log(f'Gefundene URLs: {found_urls}')
     
-    # 3. Kodi-Player vorbereiten
+    # 3. Versuche jede URL mit ResolveURL
+    final_url = None
+    for url in found_urls:
+        if 'iframe' in url.lower() or 'embed' in url.lower():
+            # Iframe/Embed laden und dort weitersuchen
+            iframe_html = fetch_html(url)
+            if iframe_html:
+                more_urls = extract_all_urls(iframe_html)
+                log(f'Im Iframe gefunden: {more_urls}')
+                for u in more_urls:
+                    resolved = try_resolveurl(u)
+                    if resolved:
+                        final_url = resolved
+                        break
+        else:
+            resolved = try_resolveurl(url)
+            if resolved:
+                final_url = resolved
+                break
+        
+        if final_url:
+            break
+    
+    # 4. Wenn nichts gefunden: Debug-Dialog anzeigen
+    if not final_url:
+        # Zeige alle gefundenen URLs im Dialog
+        if found_urls:
+            msg = 'Gefundene URLs:\n' + '\n'.join(found_urls[:5])
+            xbmcgui.Dialog().ok(addon_name, msg)
+        else:
+            xbmcgui.Dialog().ok(addon_name, 'Keine Video-URL gefunden!')
+        return
+    
+    log(f'FINALE URL: {final_url}')
+    
+    # 5. Kodi-Player vorbereiten
     list_item = xbmcgui.ListItem()
     list_item.setPath(final_url)
     
-    # Wichtig: User-Agent URL-encoden (wegen Leerzeichen!)
     encoded_ua = urllib.parse.quote(USER_AGENT)
-    encoded_ref = urllib.parse.quote(REFERER)
-    headers = f'User-Agent={encoded_ua}&Referer={encoded_ref}'
-    
+    headers = f'User-Agent={encoded_ua}&Referer={urllib.parse.quote(REFERER)}'
     list_item.setProperty('inputstream.adaptive.stream_headers', headers)
-    list_item.setProperty('http-user-agent', USER_AGENT)
-    list_item.setProperty('http-referer', REFERER)
     
-    # Für HLS/DASH-Streams (falls nötig)
     if '.m3u8' in final_url:
         list_item.setProperty('inputstream', 'inputstream.adaptive')
         list_item.setProperty('inputstream.adaptive.manifest_type', 'hls')
     
-    xbmcplugin.setResolvedUrl(handle, succeeded=True, listitem=list_item)
+    xbmcplugin.setResolvedUrl(handle, True, list_item)
 
 # ==================== ROUTER ====================
 
 def router(paramstring):
-    """Leitet Anfragen weiter"""
     params = dict(urllib.parse.parse_qsl(paramstring))
-    
     if 'action' in params and params['action'] == 'play':
         video_url = urllib.parse.unquote(params['url'])
         play_video(video_url)
