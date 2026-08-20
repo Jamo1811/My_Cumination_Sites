@@ -1,11 +1,17 @@
 import sys
 import re
 import urllib.parse
-import requests
-from bs4 import BeautifulSoup
 import xbmc
 import xbmcgui
 import xbmcplugin
+
+# Nutzung von cloudscraper zur Umgehung von Bot-Schutz
+try:
+    import cloudscraper
+    HAS_SCRAPER = True
+except ImportError:
+    HAS_SCRAPER = False
+    import requests
 
 try:
     import resolveurl
@@ -13,16 +19,23 @@ try:
 except ImportError:
     HAS_RESOLVEURL = False
 
+from bs4 import BeautifulSoup
+
 HANDLE = int(sys.argv[1]) if len(sys.argv) > 1 else -1
 BASE_URL = sys.argv[0] if len(sys.argv) > 0 else ''
 
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
 
-HEADERS = {
-    'User-Agent': USER_AGENT,
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7',
-}
+def get_session():
+    if HAS_SCRAPER:
+        scraper = cloudscraper.create_scraper(
+            browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
+        )
+        return scraper
+    else:
+        sess = requests.Session()
+        sess.headers.update({'User-Agent': USER_AGENT})
+        return sess
 
 def build_url(query):
     return BASE_URL + '?' + urllib.parse.urlencode(query)
@@ -55,8 +68,8 @@ def main_menu():
 
 def list_categories(categories_url):
     try:
-        session = requests.Session()
-        response = session.get(categories_url, headers=HEADERS, timeout=15)
+        session = get_session()
+        response = session.get(categories_url, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
         added_urls = set()
 
@@ -86,8 +99,8 @@ def list_categories(categories_url):
 def list_videos(category_url):
     try:
         xbmcplugin.setContent(HANDLE, 'videos')
-        session = requests.Session()
-        response = session.get(category_url, headers=HEADERS, timeout=15)
+        session = get_session()
+        response = session.get(category_url, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
         added_urls = set()
 
@@ -165,22 +178,26 @@ def extract_stream(session, page_url):
 
 def play_video(video_url):
     try:
-        session = requests.Session()
-        session.headers.update(HEADERS)
-        session.headers['Referer'] = video_url
-
+        session = get_session()
         stream_url = extract_stream(session, video_url)
 
         if stream_url:
-            play_item = xbmcgui.ListItem(path=stream_url)
+            # Reiche die vom Cloudscraper generierten Cookies & UA an Kodi weiter
+            cookies = session.cookies.get_dict()
+            cookie_str = "; ".join([f"{k}={v}" for k, v in cookies.items()])
             
-            # Wichtig: Zwingt Kodi dazu, den Stream über InputStream Adaptive zu verarbeiten
-            play_item.setProperty('inputstream', 'inputstream.adaptive')
-            play_item.setProperty('inputstream.adaptive.stream_headers', f'User-Agent={urllib.parse.quote(USER_AGENT)}&Referer={urllib.parse.quote(video_url)}')
-            play_item.setProperty('inputstream.adaptive.manifest_type', 'hls' if '.m3u8' in stream_url else 'mp4')
-            
+            headers = [
+                f"User-Agent={urllib.parse.quote(USER_AGENT)}",
+                f"Referer={urllib.parse.quote(video_url)}"
+            ]
+            if cookie_str:
+                headers.append(f"Cookie={urllib.parse.quote(cookie_str)}")
+
+            full_path = f"{stream_url}|{'&'.join(headers)}"
+
+            play_item = xbmcgui.ListItem(path=full_path)
             play_item.setContentLookup(False)
-            play_item.setMimeType('video/mp4' if '.mp4' in stream_url else 'application/vnd.apple.mpegurl')
+            play_item.setMimeType('video/mp4')
 
             xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
         else:
