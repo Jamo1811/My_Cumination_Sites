@@ -1,8 +1,10 @@
-import re
-
 def play_video(video_url):
     try:
-        response = requests.get(video_url, headers=HEADERS, timeout=10)
+        # Header inklusive Referer, damit der Stream-Server nicht blockiert
+        headers = HEADERS.copy()
+        headers['Referer'] = video_url
+
+        response = requests.get(video_url, headers=headers, timeout=10)
         html = response.text
         soup = BeautifulSoup(html, 'html.parser')
         
@@ -17,27 +19,19 @@ def play_video(video_url):
             elif video_element.get('src'):
                 stream_url = video_element.get('src')
         
-        # 2. Suche per RegEx nach MP4 oder M3U8 Links im JS-Code
+        # 2. Suche nach MP4 / M3U8 URLs per RegEx im Quelltext
         if not stream_url:
-            match = re.search(r'file\s*:\s*["\'](https?://[^"\']+\.(?:mp4|m3u8)[^"\']*)["\']', html)
-            if match:
-                stream_url = match.group(1)
-                
-        if not stream_url:
-            match_source = re.search(r'src\s*=\s*["\'](https?://[^"\']+\.(?:mp4|m3u8)[^"\']*)["\']', html)
-            if match_source:
-                stream_url = match_source.group(1)
+            matches = re.findall(r'https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*', html)
+            if matches:
+                stream_url = matches[0]
 
-        # 3. Falls Iframe genutzt wird
-        if not stream_url:
-            iframe = soup.find('iframe')
-            if iframe and iframe.get('src'):
-                stream_url = iframe.get('src')
-
-        # Stream an Kodi übergeben
+        # Stream an Kodi mit Referer-Header übergeben
         if stream_url:
-            xbmc.log(f"[MyCumination] Stream gefunden: {stream_url}", level=xbmc.LOGINFO)
-            play_item = xbmcgui.ListItem(path=stream_url)
+            # Kodi mitgeben, dass beim Abspielen der Referer mitgesendet werden muss
+            final_stream_url = f"{stream_url}|User-Agent={urllib.parse.quote(headers['User-Agent'])}&Referer={urllib.parse.quote(video_url)}"
+            
+            xbmc.log(f"[MyCumination] Stream gefunden: {final_stream_url}", level=xbmc.LOGINFO)
+            play_item = xbmcgui.ListItem(path=final_stream_url)
             xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
         else:
             xbmc.log(f"[MyCumination] Kein Stream auf {video_url} gefunden.", level=xbmc.LOGERROR)
