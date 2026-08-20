@@ -39,7 +39,7 @@ def main_menu():
         ('Alle Videos', 'https://darknessporn.com/', 'list_videos'),
         ('Neueste Videos', 'https://darknessporn.com/?filter=latest', 'list_videos'),
         ('Most Viewed Videos', 'https://darknessporn.com/?filter=most_viewed', 'list_videos'),
-        ('Top Bewertet', 'https://darknessporn.com/top-rated/', 'list_videos'),
+        ('Top Bewertet', 'https://darknessporn.com/?filter=top-rated', 'list_videos'),
         ('Kategorien', 'https://darknessporn.com/categories/', 'list_categories'),
     ]
     for title, target_url, action in items:
@@ -57,7 +57,10 @@ def list_categories(categories_url):
         soup = BeautifulSoup(response.text, 'html.parser')
         added_urls = set()
 
-        for a_tag in soup.find_all('a', href=True):
+        # Eingrenzung auf den Hauptbereich
+        main_content = soup.find('div', id='single-wrapper') or soup.find('div', class_='site') or soup
+
+        for a_tag in main_content.find_all('a', href=True):
             href = a_tag['href']
             
             if ('/category/' in href or '/tag/' in href or '/categories/' in href) and href not in added_urls:
@@ -94,30 +97,37 @@ def list_videos(category_url):
         count = 0
         added_urls = set()
 
-        for a_tag in soup.find_all('a', href=True):
+        # Nur Artikel-Elemente / Video-Karten parsen (ignoriert Sidebar und Footer)
+        articles = soup.find_all(['article', 'div'], class_=re.compile(r'post|video|item'))
+
+        for art in articles:
+            a_tag = art.find('a', href=True)
+            if not a_tag:
+                continue
+
             video_url = a_tag['href']
-            
             if not video_url.startswith('http'):
                 video_url = urllib.parse.urljoin('https://darknessporn.com/', video_url)
 
-            if video_url in added_urls or '?filter=' in video_url or video_url.endswith('/categories/'):
+            if video_url in added_urls or video_url.endswith('/categories/'):
                 continue
 
-            img_tag = a_tag.find('img')
+            img_tag = art.find('img')
+            title = a_tag.get('title') or (img_tag.get('alt') if img_tag else '') or a_tag.text.strip()
+            thumb = ''
             if img_tag:
-                title = a_tag.get('title') or img_tag.get('alt') or img_tag.get('title') or a_tag.text.strip()
-                thumb = img_tag.get('data-src') or img_tag.get('data-original') or img_tag.get('data-webp') or img_tag.get('src') or ''
+                thumb = img_tag.get('data-src') or img_tag.get('data-original') or img_tag.get('src') or ''
+
+            if title and len(title) > 3:
+                added_urls.add(video_url)
+                url = build_url({'action': 'play_video', 'video_url': video_url})
+                li = xbmcgui.ListItem(label=title)
+                if thumb:
+                    li.setArt({'thumb': thumb, 'icon': thumb})
                 
-                if title and len(title) > 3 and ('/video/' in video_url or '/watch/' in video_url or len(video_url.rstrip('/').split('/')) > 3):
-                    added_urls.add(video_url)
-                    url = build_url({'action': 'play_video', 'video_url': video_url})
-                    li = xbmcgui.ListItem(label=title)
-                    if thumb:
-                        li.setArt({'thumb': thumb, 'icon': thumb})
-                    
-                    li.setProperty('IsPlayable', 'true')
-                    xbmcplugin.addDirectoryItem(handle=HANDLE, url=url, listitem=li, isFolder=False)
-                    count += 1
+                li.setProperty('IsPlayable', 'true')
+                xbmcplugin.addDirectoryItem(handle=HANDLE, url=url, listitem=li, isFolder=False)
+                count += 1
 
         if count == 0:
             xbmcgui.Dialog().notification('Hinweis', 'Keine Videos gefunden', xbmcgui.NOTIFICATION_WARNING)
@@ -140,37 +150,34 @@ def play_video(video_url):
         
         stream_url = None
 
-        # 1. Auslesen von <video src="..."> oder <source src="..."> Tags
+        # 1. Suche nach vollwertigen Haupt-Videos (schließt Vorschau-Trailers aus)
         for tag in soup.find_all(['video', 'source']):
             src = tag.get('src') or tag.get('data-src') or ''
             if src and '.mp4' in src.lower():
-                if not any(x in src.lower() for x in ['preview', 'trailer', 'short', 'thumb', 'gif']):
+                if not any(x in src.lower() for x in ['preview', 'trailer', 'short', 'thumb', 'gif', 'sample']):
                     stream_url = src
                     break
 
-        # 2. Suche nach URLs mit nosofiles CDN
+        # 2. Suche nach nosofiles CDN Links mit Unterdrückung von Previews
         if not stream_url:
             noso_matches = re.findall(r'https?://[^\s\'"]*nosofiles\.com[^\s\'"]*\.mp4[^\s\'"]*', html)
-            if noso_matches:
-                stream_url = noso_matches[0]
+            for m in noso_matches:
+                if not any(x in m.lower() for x in ['preview', 'short', 'thumb']):
+                    stream_url = m
+                    break
 
-        # 3. Poster-Bild Fallback (_poster.jpg zu .mp4 umwandeln)
+        # 3. Poster-Bild Fallback (_poster.jpg durch .mp4 ersetzen)
         if not stream_url:
             poster_match = re.search(r'https?://[^\s\'"]+output_[^\s\'"]+?_poster\.jpg[^\s\'"]*', html)
             if poster_match:
                 stream_url = re.sub(r'_poster\.jpg.*$', '.mp4', poster_match.group(0))
 
-        # 4. Allgemeine MP4-Suche als Fallback
-        if not stream_url:
-            all_matches = re.findall(r'https?://[^\s\'"]+\.mp4[^\s\'"]*', html)
-            for m in all_matches:
-                if not any(x in m.lower() for x in ['preview', 'trailer', 'short', 'thumb', 'gif']):
-                    stream_url = m
-                    break
-
         if stream_url:
             stream_url = urllib.parse.unquote(stream_url).replace('&amp;', '&')
-            final_stream_url = f"{stream_url}|User-Agent={urllib.parse.quote(headers['User-Agent'])}&Referer={urllib.parse.quote(video_url)}"
+            
+            # Header für Kodi-Player anhängen, um Abbrüche zu vermeiden
+            headers_str = f"User-Agent={urllib.parse.quote(headers['User-Agent'])}&Referer={urllib.parse.quote(video_url)}"
+            final_stream_url = f"{stream_url}|{headers_str}"
             
             play_item = xbmcgui.ListItem(path=final_stream_url)
             xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
