@@ -2,6 +2,8 @@ import sys
 import re
 import urllib.parse
 import requests
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from bs4 import BeautifulSoup
 import xbmc
 import xbmcgui
@@ -16,6 +18,53 @@ HEADERS = {
     'Accept-Language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7',
 }
 
+# --- LOKALER STREAM-PROXY ---
+PROXY_PORT = 8888
+TARGET_STREAM_URL = ""
+TARGET_REFERER = ""
+
+class ProxyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        global TARGET_STREAM_URL, TARGET_REFERER
+        if not TARGET_STREAM_URL:
+            self.send_error(404)
+            return
+
+        headers = HEADERS.copy()
+        if TARGET_REFERER:
+            headers['Referer'] = TARGET_REFERER
+        
+        # Reiche Range-Header von Kodi weiter (wichtig für Spulen/Seeking)
+        if 'Range' in self.headers:
+            headers['Range'] = self.headers['Range']
+
+        try:
+            req = requests.get(TARGET_STREAM_URL, headers=headers, stream=True, timeout=15)
+            self.send_response(req.status_code)
+            
+            for key, val in req.headers.items():
+                if key.lower() in ['content-type', 'content-length', 'accept-ranges', 'content-range']:
+                    self.send_header(key, val)
+            self.end_headers()
+
+            for chunk in req.iter_content(chunk_size=64 * 1024):
+                if chunk:
+                    self.wfile.write(chunk)
+        except Exception as e:
+            xbmc.log(f"[MyCumination Proxy] Stream Fehler: {str(e)}", level=xbmc.LOGERROR)
+
+    def log_message(self, format, *args):
+        pass # Deaktiviere Server-Log Spamming
+
+def start_proxy():
+    server = HTTPServer(('127.0.0.1', PROXY_PORT), ProxyHandler)
+    server.serve_forever()
+
+# Starte Proxy im Hintergrund-Thread
+proxy_thread = threading.Thread(target=start_proxy, daemon=True)
+proxy_thread.start()
+
+# --- ADDON LOGIK ---
 def build_url(query):
     return BASE_URL + '?' + urllib.parse.urlencode(query)
 
@@ -150,6 +199,7 @@ def list_videos(category_url):
     xbmcplugin.endOfDirectory(HANDLE)
 
 def play_video(video_url):
+    global TARGET_STREAM_URL, TARGET_REFERER
     try:
         session = requests.Session()
         req_headers = HEADERS.copy()
@@ -195,26 +245,17 @@ def play_video(video_url):
                     break
 
         if stream_url:
-            # Maskiere das + Zeichen im Token
-            if '?' in stream_url:
-                base_part, query_part = stream_url.split('?', 1)
-                query_part = query_part.replace('+', '%2B')
-                stream_url = f"{base_part}?{query_part}"
+            # Speichere die echte Stream-URL für unseren lokalen Proxy
+            TARGET_STREAM_URL = stream_url
+            TARGET_REFERER = video_url
 
-            play_item = xbmcgui.ListItem(path=stream_url)
+            # Übergib Kodi eine einfache, lokale Adresse
+            local_url = f"http://127.0.0.1:{PROXY_PORT}/video.mp4"
             
-            if '.m3u8' in stream_url:
-                play_item.setProperty('inputstream', 'inputstream.adaptive')
-                play_item.setProperty('inputstream.adaptive.manifest_type', 'hls')
-                play_item.setProperty('inputstream.adaptive.stream_headers', f"User-Agent={HEADERS['User-Agent']}&Referer={video_url}")
-                play_item.setMimeType('application/vnd.apple.mpegurl')
-            else:
-                # Direkter Fallback ohne Adaptive für normale MP4
-                headers_payload = f"User-Agent={urllib.parse.quote(HEADERS['User-Agent'])}&Referer={urllib.parse.quote(video_url)}"
-                play_item.setPath(f"{stream_url}|{headers_payload}")
-                play_item.setMimeType('video/mp4')
-
+            play_item = xbmcgui.ListItem(path=local_url)
+            play_item.setMimeType('video/mp4')
             play_item.setProperty('IsPlayable', 'true')
+
             xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
         else:
             xbmcgui.Dialog().notification('Fehler', 'Kein Stream gefunden!', xbmcgui.NOTIFICATION_ERROR)
