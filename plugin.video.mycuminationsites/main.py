@@ -12,11 +12,8 @@ BASE_URL = sys.argv[0] if len(sys.argv) > 0 else ''
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Accept': '*/*',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7',
-    'Sec-Fetch-Dest': 'video',
-    'Sec-Fetch-Mode': 'no-cors',
-    'Sec-Fetch-Site': 'cross-site',
 }
 
 def build_url(query):
@@ -91,6 +88,7 @@ def list_categories(categories_url):
 
 def list_videos(category_url):
     try:
+        xbmcplugin.setContent(HANDLE, 'videos')
         session = requests.Session()
         response = session.get(category_url, headers=HEADERS, timeout=15)
         response.raise_for_status()
@@ -196,27 +194,17 @@ def play_video(video_url):
         if stream_url:
             stream_url = urllib.parse.unquote(stream_url).replace('&amp;', '&')
             
-            # Validiere den Stream-Link durch einen HEAD-Request, um Weiterleitungen vorab aufzulösen
-            try:
-                head_res = session.head(stream_url, allow_redirects=True, timeout=8)
-                if head_res.url:
-                    stream_url = head_res.url
-            except:
-                pass
-
-            # Kodi Pipe-Header zusammenbauen
-            headers_payload = [
-                f"User-Agent={urllib.parse.quote(HEADERS['User-Agent'])}",
-                f"Referer={urllib.parse.quote(video_url)}"
-            ]
+            # Kodi Header Formatierung
+            headers_payload = f"User-Agent={urllib.parse.quote(HEADERS['User-Agent'])}&Referer={urllib.parse.quote(video_url)}"
             
             cookies_str = "; ".join([f"{c.name}={c.value}" for c in session.cookies])
             if cookies_str:
-                headers_payload.append(f"Cookie={urllib.parse.quote(cookies_str)}")
+                headers_payload += f"&Cookie={urllib.parse.quote(cookies_str)}"
                 
-            final_stream_url = f"{stream_url}|" + "&".join(headers_payload)
+            final_stream_url = f"{stream_url}|{headers_payload}"
             
             play_item = xbmcgui.ListItem(path=final_stream_url)
+            play_item.setProperty('IsPlayable', 'true')
             
             if '.m3u8' in stream_url:
                 play_item.setProperty('inputstream', 'inputstream.adaptive')
@@ -228,10 +216,12 @@ def play_video(video_url):
             xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
         else:
             xbmcgui.Dialog().notification('Fehler', 'Kein Stream-Link gefunden', xbmcgui.NOTIFICATION_ERROR)
+            xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
             
     except Exception as e:
         xbmc.log(f"[MyCumination] Abspiel-Fehler: {str(e)}", level=xbmc.LOGERROR)
         xbmcgui.Dialog().notification('Fehler', str(e), xbmcgui.NOTIFICATION_ERROR)
+        xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
 
 def router():
     params = get_params()
