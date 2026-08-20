@@ -136,38 +136,49 @@ def play_video(video_url):
         session = requests.Session()
         response = session.get(video_url, headers=headers, timeout=15)
         html = response.text
+        soup = BeautifulSoup(html, 'html.parser')
         
         stream_url = None
 
-        post_id_match = re.search(r'postid-(\d+)', html) or re.search(r'data-post-id=["\'](\d+)["\']', html)
-        
-        if post_id_match:
-            post_id = post_id_match.group(1)
-            ajax_url = 'https://darknessporn.com/wp-admin/admin-ajax.php'
-            ajax_headers = headers.copy()
-            ajax_headers['X-Requested-With'] = 'XMLHttpRequest'
-            
-            ajax_resp = session.post(ajax_url, data={'action': 'get_player_html', 'post_id': post_id}, headers=ajax_headers, timeout=10)
-            if ajax_resp.status_code == 200:
-                # DEBUG: Schreibt den Player-Code direkt in die kodi.log
-                xbmc.log(f"[MyCumination PLAYER HTML] {ajax_resp.text}", level=xbmc.LOGINFO)
-                
-                urls = re.findall(r'https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*', ajax_resp.text)
-                for u in urls:
-                    if not any(x in u.lower() for x in ['preview', 'trailer', 'short', 'gif', 'thumb']):
-                        stream_url = u
-                        break
-
-        if not stream_url:
-            urls = re.findall(r'https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*', html)
-            for u in urls:
-                if not any(x in u.lower() for x in ['preview', 'trailer', 'short', 'gif', 'thumb']):
-                    stream_url = u
+        # 1. HTML5 Video / Source Tags auslesen
+        for tag in soup.find_all(['source', 'video']):
+            src = tag.get('src') or tag.get('data-src') or ''
+            if src and ('.mp4' in src.lower() or '.m3u8' in src.lower()):
+                if not any(x in src.lower() for x in ['preview', 'trailer', 'short', 'gif', 'thumb']):
+                    stream_url = src
                     break
 
+        # 2. Regex-Suche nach direkten .mp4 / .m3u8 URLs im Quelltext
+        if not stream_url:
+            matches = re.findall(r'https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*', html)
+            for m in matches:
+                if not any(x in m.lower() for x in ['preview', 'trailer', 'short', 'gif', 'thumb', 'main.vtt']):
+                    stream_url = m
+                    break
+
+        # 3. Falls Embed-Iframe verwendet wird
+        if not stream_url:
+            iframe = soup.find('iframe')
+            if iframe and iframe.get('src'):
+                iframe_url = iframe.get('src')
+                if iframe_url.startswith('//'):
+                    iframe_url = 'https:' + iframe_url
+                
+                iframe_resp = session.get(iframe_url, headers=headers, timeout=10)
+                iframe_matches = re.findall(r'https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*', iframe_resp.text)
+                for m in iframe_matches:
+                    if not any(x in m.lower() for x in ['preview', 'trailer', 'short', 'gif', 'thumb']):
+                        stream_url = m
+                        break
+
+        # Stream an Kodi übergeben
         if stream_url:
+            if not stream_url.startswith('http'):
+                stream_url = urllib.parse.urljoin('https://darknessporn.com/', stream_url)
+                
             stream_url = urllib.parse.unquote(stream_url).replace('&amp;', '&')
             final_stream_url = f"{stream_url}|User-Agent={urllib.parse.quote(headers['User-Agent'])}&Referer={urllib.parse.quote(video_url)}"
+            
             play_item = xbmcgui.ListItem(path=final_stream_url)
             xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
         else:
