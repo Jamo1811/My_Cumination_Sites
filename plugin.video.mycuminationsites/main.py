@@ -2,6 +2,7 @@ import sys
 import re
 import urllib.parse
 import requests
+import socket
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from bs4 import BeautifulSoup
@@ -18,10 +19,10 @@ HEADERS = {
     'Accept-Language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7',
 }
 
-# --- LOKALER STREAM-PROXY ---
 PROXY_PORT = 8888
 TARGET_STREAM_URL = ""
 TARGET_REFERER = ""
+httpd_server = None
 
 class ProxyHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -34,7 +35,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if TARGET_REFERER:
             headers['Referer'] = TARGET_REFERER
         
-        # Reiche Range-Header von Kodi weiter (wichtig für Spulen/Seeking)
         if 'Range' in self.headers:
             headers['Range'] = self.headers['Range']
 
@@ -54,17 +54,24 @@ class ProxyHandler(BaseHTTPRequestHandler):
             xbmc.log(f"[MyCumination Proxy] Stream Fehler: {str(e)}", level=xbmc.LOGERROR)
 
     def log_message(self, format, *args):
-        pass # Deaktiviere Server-Log Spamming
+        pass
 
-def start_proxy():
-    server = HTTPServer(('127.0.0.1', PROXY_PORT), ProxyHandler)
-    server.serve_forever()
+def start_proxy_server():
+    global httpd_server
+    try:
+        httpd_server = HTTPServer(('127.0.0.1', PROXY_PORT), ProxyHandler)
+        httpd_server.serve_forever()
+    except Exception as e:
+        xbmc.log(f"[MyCumination Proxy] Port bereits aktiv oder Fehler: {str(e)}", level=xbmc.LOGINFO)
 
-# Starte Proxy im Hintergrund-Thread
-proxy_thread = threading.Thread(target=start_proxy, daemon=True)
-proxy_thread.start()
+# Prüfe ob Proxy-Port frei ist, falls ja -> starten
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+result = sock.connect_ex(('127.0.0.1', PROXY_PORT))
+sock.close()
+if result != 0:
+    t = threading.Thread(target=start_proxy_server, daemon=True)
+    t.start()
 
-# --- ADDON LOGIK ---
 def build_url(query):
     return BASE_URL + '?' + urllib.parse.urlencode(query)
 
@@ -173,7 +180,7 @@ def list_videos(category_url):
                 if thumb:
                     li.setArt({'thumb': thumb, 'icon': thumb})
                 
-                li.setProperty('IsPlayable', 'true')
+                # isFolder=False ohne IsPlayable Property, da wir direkt xbmc.Player nutzen
                 xbmcplugin.addDirectoryItem(handle=HANDLE, url=url, listitem=li, isFolder=False)
                 count += 1
 
@@ -201,6 +208,9 @@ def list_videos(category_url):
 def play_video(video_url):
     global TARGET_STREAM_URL, TARGET_REFERER
     try:
+        pDialog = xbmcgui.DialogProgress()
+        pDialog.create('Stream wird geladen', 'Verbindung wird aufgebaut...')
+
         session = requests.Session()
         req_headers = HEADERS.copy()
         req_headers['Referer'] = video_url
@@ -244,27 +254,27 @@ def play_video(video_url):
                     stream_url = m
                     break
 
+        pDialog.close()
+
         if stream_url:
-            # Speichere die echte Stream-URL für unseren lokalen Proxy
             TARGET_STREAM_URL = stream_url
             TARGET_REFERER = video_url
 
-            # Übergib Kodi eine einfache, lokale Adresse
             local_url = f"http://127.0.0.1:{PROXY_PORT}/video.mp4"
             
             play_item = xbmcgui.ListItem(path=local_url)
             play_item.setMimeType('video/mp4')
-            play_item.setProperty('IsPlayable', 'true')
-
-            xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
+            
+            # Direktes Abspielen über die Kodi-Player Instanz erzwingen
+            xbmc.Player().play(local_url, play_item)
         else:
             xbmcgui.Dialog().notification('Fehler', 'Kein Stream gefunden!', xbmcgui.NOTIFICATION_ERROR)
-            xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
 
     except Exception as e:
+        if 'pDialog' in locals():
+            pDialog.close()
         xbmc.log(f"[MyCumination] Abspiel-Fehler: {str(e)}", level=xbmc.LOGERROR)
         xbmcgui.Dialog().notification('Fehler', str(e), xbmcgui.NOTIFICATION_ERROR)
-        xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
 
 def router():
     params = get_params()
