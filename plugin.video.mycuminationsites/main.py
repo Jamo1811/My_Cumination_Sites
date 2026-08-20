@@ -49,10 +49,20 @@ def main_menu():
 def list_videos(category_url):
     try:
         response = requests.get(category_url, headers=HEADERS, timeout=10)
+        
+        # --- LOGGING START ---
+        xbmc.log(f"[MyCumination] Status-Code: {response.status_code}", level=xbmc.LOGINFO)
+        xbmc.log(f"[MyCumination] HTML-Ausschnitt: {response.text[:300]}", level=xbmc.LOGINFO)
+        # --- LOGGING END ---
+        
         soup = BeautifulSoup(response.text, 'html.parser')
         
         # KolorTube Theme spezifische Selektoren
         videos = soup.find_all('article') or soup.select('div.thumb-block, div.post, div.video-block')
+        
+        # --- LOGGING START ---
+        xbmc.log(f"[MyCumination] Gefundene Videos: {len(videos)}", level=xbmc.LOGINFO)
+        # --- LOGGING END ---
         
         for video in videos:
             a_tag = video.find('a')
