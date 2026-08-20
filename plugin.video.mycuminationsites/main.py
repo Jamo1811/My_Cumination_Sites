@@ -162,45 +162,45 @@ def play_video(video_url):
         
         stream_url = None
 
-        # 1. iFrame Einbettungen
-        iframes = soup.find_all('iframe', src=True)
-        for iframe in iframes:
-            iframe_src = iframe['src']
-            if any(k in iframe_src for k in ['player', 'embed', 'nosofiles']):
+        # 1. Direct Tag Parsing (<video> / <source>)
+        for tag in soup.find_all(['video', 'source']):
+            src = tag.get('src') or tag.get('data-src') or ''
+            if src and ('.mp4' in src.lower() or '.m3u8' in src.lower()):
+                if not any(x in src.lower() for x in ['preview', 'trailer', 'short', 'thumb', 'sample']):
+                    stream_url = src
+                    break
+
+        # 2. iFrames prüfen
+        if not stream_url:
+            for iframe in soup.find_all('iframe', src=True):
+                iframe_src = iframe['src']
                 if not iframe_src.startswith('http'):
                     iframe_src = urllib.parse.urljoin('https://darknessporn.com/', iframe_src)
                 try:
                     iframe_res = session.get(iframe_src, timeout=10)
-                    html += iframe_res.text
+                    matches = re.findall(r'https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*', iframe_res.text)
+                    for m in matches:
+                        if not any(x in m.lower() for x in ['preview', 'short', 'thumb', 'trailer']):
+                            stream_url = m
+                            break
                 except:
                     pass
 
-        # 2. Direktes Tag-Parsing (<video> / <source>)
-        for tag in soup.find_all(['video', 'source']):
-            src = tag.get('src') or tag.get('data-src') or ''
-            if src and ('.mp4' in src.lower() or '.m3u8' in src.lower()):
-                if not any(x in src.lower() for x in ['preview', 'trailer', 'short', 'thumb', 'gif', 'sample']):
-                    stream_url = src
-                    break
-
-        # 3. RegEx MP4 / M3U8 Fallback
+        # 3. RegEx Direkt-Suche im Haupt-HTML
         if not stream_url:
             matches = re.findall(r'https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*', html)
             for m in matches:
-                if not any(x in m.lower() for x in ['preview', 'short', 'thumb', 'trailer', 'sample']):
+                if not any(x in m.lower() for x in ['preview', 'short', 'thumb', 'trailer']):
                     stream_url = m
                     break
 
         if stream_url:
             stream_url = urllib.parse.unquote(stream_url).replace('&amp;', '&')
             
-            # Kodi Header Formatierung
-            headers_payload = f"User-Agent={urllib.parse.quote(HEADERS['User-Agent'])}&Referer={urllib.parse.quote(video_url)}"
+            # Zeige die aufgelöste Adresse vor der Übergabe an Kodi
+            xbmcgui.Dialog().ok('Gefundene Stream-URL', stream_url)
             
-            cookies_str = "; ".join([f"{c.name}={c.value}" for c in session.cookies])
-            if cookies_str:
-                headers_payload += f"&Cookie={urllib.parse.quote(cookies_str)}"
-                
+            headers_payload = f"User-Agent={urllib.parse.quote(HEADERS['User-Agent'])}&Referer={urllib.parse.quote(video_url)}"
             final_stream_url = f"{stream_url}|{headers_payload}"
             
             play_item = xbmcgui.ListItem(path=final_stream_url)
@@ -215,12 +215,11 @@ def play_video(video_url):
 
             xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
         else:
-            xbmcgui.Dialog().notification('Fehler', 'Kein Stream-Link gefunden', xbmcgui.NOTIFICATION_ERROR)
+            xbmcgui.Dialog().notification('Fehler', 'Kein Stream gefunden!', xbmcgui.NOTIFICATION_ERROR)
             xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
-            
+
     except Exception as e:
-        xbmc.log(f"[MyCumination] Abspiel-Fehler: {str(e)}", level=xbmc.LOGERROR)
-        xbmcgui.Dialog().notification('Fehler', str(e), xbmcgui.NOTIFICATION_ERROR)
+        xbmcgui.Dialog().notification('Exception', str(e), xbmcgui.NOTIFICATION_ERROR)
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
 
 def router():
