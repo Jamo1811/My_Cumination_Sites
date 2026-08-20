@@ -127,48 +127,52 @@ def list_videos(category_url):
         xbmcgui.Dialog().notification('Fehler', str(e), xbmcgui.NOTIFICATION_ERROR)
     xbmcplugin.endOfDirectory(HANDLE)
 
-def extract_stream(session, page_url):
-    res = session.get(page_url, timeout=10)
-    html = res.text
-
-    # Zuerst nach src="...mp4" im HTML-Code suchen (wie im Inspector gefunden)
-    soup = BeautifulSoup(html, 'html.parser')
-    video_tag = soup.find('video', class_=re.compile(r'xp-Player-video'))
-    if video_tag and video_tag.get('src'):
-        return video_tag['src']
-
-    # RegEx-Fallback für direkte Links
-    matches = re.findall(r'(https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*)', html)
-    for m in matches:
-        clean = m.replace('\\/', '/')
-        if not any(x in clean.lower() for x in ['preview', 'trailer', 'short', 'thumb']):
-            return clean
-
-    return None
-
 def play_video(video_url):
     try:
         session = requests.Session()
-        session.headers.update(HEADERS)
+        
+        # 1. Hauptseite aufrufen, um die notwendigen Session-Cookies abzugreifen
+        response = session.get(video_url, headers=HEADERS, timeout=10)
+        html = response.text
 
-        stream_url = extract_stream(session, video_url)
+        # 2. Direkten Video-Link aus dem HTML-Code (wie im DevTools Inspector) auslesen
+        soup = BeautifulSoup(html, 'html.parser')
+        video_tag = soup.find('video', class_=re.compile(r'xp-Player-video'))
+        
+        stream_url = None
+        if video_tag and video_tag.get('src'):
+            stream_url = video_tag['src']
+        else:
+            matches = re.findall(r'(https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*)', html)
+            for m in matches:
+                clean = m.replace('\\/', '/')
+                if not any(x in clean.lower() for x in ['preview', 'trailer', 'short', 'thumb']):
+                    stream_url = clean
+                    break
 
         if stream_url:
-            # Baue Header-String für FFmpeg
+            # 3. Cookies aus der Session auslesen und zusammenbauen
+            cookie_str = '; '.join([f"{c.name}={c.value}" for c in session.cookies])
+            
             headers_to_send = {
                 'User-Agent': USER_AGENT,
-                'Referer': video_url
+                'Referer': video_url,
             }
+            if cookie_str:
+                headers_to_send['Cookie'] = cookie_str
+            
+            # Pipe-Syntax für FFmpeg / Kodi-Player aufbauen
             header_pipe = urllib.parse.urlencode(headers_to_send)
             final_stream_url = f"{stream_url}|{header_pipe}"
 
+            # 4. Abspieldatei übergeben mit deaktiviertem Pre-Scan
             play_item = xbmcgui.ListItem(path=final_stream_url)
             play_item.setContentLookup(False)
             play_item.setMimeType('video/mp4')
 
             xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
         else:
-            xbmcgui.Dialog().notification('Fehler', 'Kein Stream gefunden', xbmcgui.NOTIFICATION_ERROR)
+            xbmcgui.Dialog().notification('Fehler', 'Kein Stream-Link im Code gefunden', xbmcgui.NOTIFICATION_ERROR)
             xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
 
     except Exception as e:
