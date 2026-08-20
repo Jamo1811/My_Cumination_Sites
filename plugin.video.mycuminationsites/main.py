@@ -57,7 +57,6 @@ def list_categories(categories_url):
         soup = BeautifulSoup(response.text, 'html.parser')
         added_urls = set()
 
-        # Eingrenzung auf den Hauptbereich
         main_content = soup.find('div', id='single-wrapper') or soup.find('div', class_='site') or soup
 
         for a_tag in main_content.find_all('a', href=True):
@@ -97,7 +96,6 @@ def list_videos(category_url):
         count = 0
         added_urls = set()
 
-        # Nur Artikel-Elemente / Video-Karten parsen (ignoriert Sidebar und Footer)
         articles = soup.find_all(['article', 'div'], class_=re.compile(r'post|video|item'))
 
         for art in articles:
@@ -129,6 +127,19 @@ def list_videos(category_url):
                 xbmcplugin.addDirectoryItem(handle=HANDLE, url=url, listitem=li, isFolder=False)
                 count += 1
 
+        # Nächste Seite (Pagination) suchen
+        next_page_tag = soup.find('a', class_=re.compile(r'next|pagination-next'), href=True) or \
+                        soup.find('a', string=re.compile(r'Nächste|Next|»|>', re.I), href=True)
+        
+        if next_page_tag:
+            next_url = next_page_tag['href']
+            if not next_url.startswith('http'):
+                next_url = urllib.parse.urljoin('https://darknessporn.com/', next_url)
+            
+            url = build_url({'action': 'list_videos', 'category_url': next_url})
+            li = xbmcgui.ListItem(label='[COLOR yellow]>> Nächste Seite >>[/COLOR]')
+            xbmcplugin.addDirectoryItem(handle=HANDLE, url=url, listitem=li, isFolder=True)
+
         if count == 0:
             xbmcgui.Dialog().notification('Hinweis', 'Keine Videos gefunden', xbmcgui.NOTIFICATION_WARNING)
             
@@ -144,45 +155,54 @@ def play_video(video_url):
         headers['Referer'] = video_url
 
         session = requests.Session()
-        response = session.get(video_url, headers=headers, timeout=15)
+        response = session.get(video_url, headers=headers, timeout=15, allow_redirects=True)
         html = response.text
         soup = BeautifulSoup(html, 'html.parser')
         
         stream_url = None
 
-        # 1. Suche nach vollwertigen Haupt-Videos (schließt Vorschau-Trailers aus)
+        # 1. iFrame Einbettungen prüfen (falls das Video extern gehostet wird)
+        iframes = soup.find_all('iframe', src=True)
+        for iframe in iframes:
+            iframe_src = iframe['src']
+            if 'player' in iframe_src or 'embed' in iframe_src or 'nosofiles' in iframe_src:
+                if not iframe_src.startswith('http'):
+                    iframe_src = urllib.parse.urljoin('https://darknessporn.com/', iframe_src)
+                try:
+                    iframe_res = session.get(iframe_src, headers={'Referer': video_url}, timeout=10)
+                    html += iframe_res.text
+                except:
+                    pass
+
+        # 2. Suche nach Video-Quellen (<video>, <source>)
         for tag in soup.find_all(['video', 'source']):
             src = tag.get('src') or tag.get('data-src') or ''
-            if src and '.mp4' in src.lower():
+            if src and ('.mp4' in src.lower() or '.m3u8' in src.lower()):
                 if not any(x in src.lower() for x in ['preview', 'trailer', 'short', 'thumb', 'gif', 'sample']):
                     stream_url = src
                     break
 
-        # 2. Suche nach nosofiles CDN Links mit Unterdrückung von Previews
+        # 3. Direkt nach MP4/M3U8 Links im gesamten HTML suchen
         if not stream_url:
-            noso_matches = re.findall(r'https?://[^\s\'"]*nosofiles\.com[^\s\'"]*\.mp4[^\s\'"]*', html)
-            for m in noso_matches:
-                if not any(x in m.lower() for x in ['preview', 'short', 'thumb']):
+            matches = re.findall(r'https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*', html)
+            for m in matches:
+                if not any(x in m.lower() for x in ['preview', 'short', 'thumb', 'trailer', 'sample']):
                     stream_url = m
                     break
-
-        # 3. Poster-Bild Fallback (_poster.jpg durch .mp4 ersetzen)
-        if not stream_url:
-            poster_match = re.search(r'https?://[^\s\'"]+output_[^\s\'"]+?_poster\.jpg[^\s\'"]*', html)
-            if poster_match:
-                stream_url = re.sub(r'_poster\.jpg.*$', '.mp4', poster_match.group(0))
 
         if stream_url:
             stream_url = urllib.parse.unquote(stream_url).replace('&amp;', '&')
             
-            # Header für Kodi-Player anhängen, um Abbrüche zu vermeiden
-            headers_str = f"User-Agent={urllib.parse.quote(headers['User-Agent'])}&Referer={urllib.parse.quote(video_url)}"
-            final_stream_url = f"{stream_url}|{headers_str}"
+            # Vollständige Header an den Kodi-Player übergeben
+            headers_formatted = f"User-Agent={urllib.parse.quote(headers['User-Agent'])}&Referer={urllib.parse.quote(video_url)}"
+            final_stream_url = f"{stream_url}|{headers_formatted}"
+            
+            xbmc.log(f"[MyCumination] Final Stream URL: {final_stream_url}", level=xbmc.LOGINFO)
             
             play_item = xbmcgui.ListItem(path=final_stream_url)
             xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
         else:
-            xbmcgui.Dialog().notification('Fehler', 'Kein Hauptstream gefunden', xbmcgui.NOTIFICATION_ERROR)
+            xbmcgui.Dialog().notification('Fehler', 'Kein Stream-Link im Quelltext gefunden', xbmcgui.NOTIFICATION_ERROR)
             
     except Exception as e:
         xbmc.log(f"[MyCumination] Abspiel-Fehler: {str(e)}", level=xbmc.LOGERROR)
