@@ -124,7 +124,7 @@ def list_videos(category_url):
                 if thumb:
                     li.setArt({'thumb': thumb, 'icon': thumb})
                 
-                li.setProperty('IsPlayable', 'true')
+                # Wir setzen hier isFolder=False, behandeln es aber in play_video als eigenständigen Player-Aufruf
                 xbmcplugin.addDirectoryItem(handle=HANDLE, url=url, listitem=li, isFolder=False)
                 count += 1
 
@@ -150,6 +150,9 @@ def list_videos(category_url):
     xbmcplugin.endOfDirectory(HANDLE)
 
 def play_video(video_url):
+    pDialog = xbmcgui.DialogProgress()
+    pDialog.create('Stream laden', 'Suche Videolink...')
+
     try:
         session = requests.Session()
         session.headers.update(HEADERS)
@@ -160,30 +163,29 @@ def play_video(video_url):
         
         candidates = []
 
-        # Search HTML5 Tags
+        # 1. Direct HTML5 Tags
         for tag in soup.find_all(['video', 'source']):
             src = tag.get('src') or tag.get('data-src') or ''
             if src and ('.mp4' in src.lower() or '.m3u8' in src.lower()):
                 candidates.append(src)
 
-        # Search iFrames
+        # 2. iFrames
         for iframe in soup.find_all('iframe', src=True):
             iframe_src = iframe['src']
             if not iframe_src.startswith('http'):
                 iframe_src = urllib.parse.urljoin('https://darknessporn.com/', iframe_src)
             try:
                 if_res = session.get(iframe_src, timeout=10)
-                # Extrahiere JS-Video-Quellen aus iFrames
                 found = re.findall(r'(https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*)', if_res.text)
                 candidates.extend(found)
             except:
                 pass
 
-        # Search JS/Regex in main page
+        # 3. RegEx in Javascript
         found_js = re.findall(r'(https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*)', res.text)
         candidates.extend(found_js)
 
-        # Filter out previews and thumbs
+        # Filter
         valid_url = None
         for cand in candidates:
             cand_clean = cand.replace('\\/', '/')
@@ -191,40 +193,33 @@ def play_video(video_url):
                 valid_url = cand_clean
                 break
 
+        pDialog.close()
+
         if valid_url:
-            # Stelle sicher, dass Session-Redirects aufgelöst werden
-            head_res = session.head(valid_url, allow_redirects=True, timeout=10)
-            final_media_url = head_res.url if head_res.status_code == 200 else valid_url
+            # Löse Redirects (z. B. nosofiles.com -> Direct CDN) komplett in Python auf
+            try:
+                head_res = session.get(valid_url, allow_redirects=True, stream=True, timeout=10)
+                final_media_url = head_res.url
+                head_res.close()
+            except:
+                final_media_url = valid_url
 
-            # Kodierung des URL-Tokens
-            if '?' in final_media_url:
-                base, query = final_media_url.split('?', 1)
-                query = query.replace('+', '%2B')
-                final_media_url = f"{base}?{query}"
-
-            # Aufbau der Header-Pipeline für den Kodi VideoPlayer
-            cookie_hdr = "; ".join([f"{c.name}={c.value}" for c in session.cookies])
-            headers_pipe = f"User-Agent={urllib.parse.quote(HEADERS['User-Agent'])}&Referer={urllib.parse.quote(video_url)}"
-            if cookie_hdr:
-                headers_pipe += f"&Cookie={urllib.parse.quote(cookie_hdr)}"
-
-            play_item = xbmcgui.ListItem(path=f"{final_media_url}|{headers_pipe}")
-            play_item.setProperty('IsPlayable', 'true')
+            # Erstelle ein sauberes ListItem für den Player
+            play_item = xbmcgui.ListItem(path=final_media_url)
             
-            if '.m3u8' in final_media_url.lower():
-                play_item.setMimeType('application/vnd.apple.mpegurl')
-            else:
-                play_item.setMimeType('video/mp4')
-
-            xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
+            # Übermittle User-Agent und Referer direkt an Kodis Netzwerk-Stack
+            play_item.setProperty('stream:http_headers', f"User-Agent={HEADERS['User-Agent']}&Referer={video_url}")
+            
+            # Erzwinge Direktwiedergabe über den Kodi Player
+            xbmc.Player().play(item=final_media_url, listitem=play_item)
         else:
-            xbmcgui.Dialog().notification('Fehler', 'Kein valider Videostream gefunden', xbmcgui.NOTIFICATION_ERROR)
-            xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
+            xbmcgui.Dialog().notification('Fehler', 'Kein Videostream gefunden', xbmcgui.NOTIFICATION_ERROR)
 
     except Exception as e:
+        if 'pDialog' in locals():
+            pDialog.close()
         xbmc.log(f"[MyCumination] Fehler bei Wiedergabe: {str(e)}", level=xbmc.LOGERROR)
         xbmcgui.Dialog().notification('Fehler', str(e), xbmcgui.NOTIFICATION_ERROR)
-        xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
 
 def router():
     params = get_params()
