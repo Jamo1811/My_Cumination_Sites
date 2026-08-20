@@ -59,7 +59,6 @@ def list_categories(categories_url):
         for a_tag in soup.find_all('a', href=True):
             href = a_tag['href']
             
-            # Filter für Kategorie-Links
             if ('/category/' in href or '/tag/' in href or '/categories/' in href) and href not in added_urls:
                 if not href.startswith('http'):
                     href = urllib.parse.urljoin('https://darknessporn.com/', href)
@@ -150,6 +149,9 @@ def play_video(video_url):
             
             ajax_resp = session.post(ajax_url, data={'action': 'get_player_html', 'post_id': post_id}, headers=ajax_headers, timeout=10)
             if ajax_resp.status_code == 200:
+                # DEBUG: Schreibt den Player-Code direkt in die kodi.log
+                xbmc.log(f"[MyCumination PLAYER HTML] {ajax_resp.text}", level=xbmc.LOGINFO)
+                
                 urls = re.findall(r'https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*', ajax_resp.text)
                 for u in urls:
                     if not any(x in u.lower() for x in ['preview', 'trailer', 'short', 'gif', 'thumb']):
