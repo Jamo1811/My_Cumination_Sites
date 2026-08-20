@@ -111,12 +111,12 @@ def list_videos(category_url):
 
             if title and len(title) > 3:
                 added_urls.add(video_url)
-                url = build_url({'action': 'play_video', 'video_url': video_url})
+                # Direktes Play-Event statt IsPlayable Folder-Verhalten
+                url = build_url({'action': 'play_video', 'video_url': video_url, 'title': title})
                 li = xbmcgui.ListItem(label=title)
                 if thumb:
                     li.setArt({'thumb': thumb, 'icon': thumb})
                 
-                li.setProperty('IsPlayable', 'true')
                 xbmcplugin.addDirectoryItem(handle=HANDLE, url=url, listitem=li, isFolder=False)
 
         next_page_tag = soup.find('a', class_=re.compile(r'next|pagination-next'), href=True) or \
@@ -163,7 +163,7 @@ def extract_stream(session, page_url):
 
     return None
 
-def play_video(video_url):
+def play_video(video_url, title="Video"):
     try:
         session = requests.Session()
         session.headers.update(HEADERS)
@@ -172,41 +172,27 @@ def play_video(video_url):
         stream_url = extract_stream(session, video_url)
 
         if stream_url:
-            head_res = session.head(stream_url, allow_redirects=True, timeout=10)
-            final_stream_url = head_res.url
+            # Baue eine saubere direkt aufrufbare HTTP-URL ohne Pipe-Formatierung
+            play_item = xbmcgui.ListItem(label=title)
+            play_item.setPath(stream_url)
             
-            cookie_str = "; ".join([f"{k}={v}" for k, v in session.cookies.get_dict().items()])
-
-            headers_dict = {
-                'User-Agent': USER_AGENT,
-                'Referer': video_url,
-            }
-            if cookie_str:
-                headers_dict['Cookie'] = cookie_str
-
-            headers_pipe = "&".join([f"{k}={urllib.parse.quote(v)}" for k, v in headers_dict.items()])
-            play_path = f"{final_stream_url}|{headers_pipe}"
-
-            xbmc.log(f"[MyCumination] Play Path: {play_path}", level=xbmc.LOGINFO)
-
-            play_item = xbmcgui.ListItem(path=play_path)
-            play_item.setContentLookup(False)
-            play_item.setMimeType('video/mp4')
-
-            xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
+            # Reiche die Header nativ über den Inputstream/Player nach
+            play_item.setProperty('http-header-fields', f'User-Agent: {USER_AGENT}\r\nReferer: {video_url}\r\n')
+            
+            # Direkt den Player-Engine Aufruf ausführen
+            xbmc.Player().play(item=stream_url, listitem=play_item)
         else:
             xbmcgui.Dialog().notification('Fehler', 'Kein Stream gefunden', xbmcgui.NOTIFICATION_ERROR)
-            xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
 
     except Exception as e:
         xbmc.log(f"[MyCumination ERROR]: {str(e)}", level=xbmc.LOGERROR)
         xbmcgui.Dialog().notification('Fehler', str(e), xbmcgui.NOTIFICATION_ERROR)
-        xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
 
 def router():
     params = get_params()
     action = params.get('action')
     url = params.get('category_url') or params.get('video_url')
+    title = params.get('title', 'Video')
 
     if not action:
         main_menu()
@@ -215,7 +201,7 @@ def router():
     elif action == 'list_videos':
         list_videos(url)
     elif action == 'play_video':
-        play_video(url)
+        play_video(url, title)
 
 if __name__ == '__main__':
     router()
