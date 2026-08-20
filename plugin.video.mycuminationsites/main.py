@@ -1,41 +1,81 @@
 import sys
 import re
 import urllib.parse
+import threading
+import socket
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import requests
+from bs4 import BeautifulSoup
 import xbmc
 import xbmcgui
 import xbmcplugin
-
-# Nutzung von cloudscraper zur Umgehung von Bot-Schutz
-try:
-    import cloudscraper
-    HAS_SCRAPER = True
-except ImportError:
-    HAS_SCRAPER = False
-    import requests
-
-try:
-    import resolveurl
-    HAS_RESOLVEURL = True
-except ImportError:
-    HAS_RESOLVEURL = False
-
-from bs4 import BeautifulSoup
 
 HANDLE = int(sys.argv[1]) if len(sys.argv) > 1 else -1
 BASE_URL = sys.argv[0] if len(sys.argv) > 0 else ''
 
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
 
-def get_session():
-    if HAS_SCRAPER:
-        scraper = cloudscraper.create_scraper(
-            browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
-        )
-        return scraper
-    else:
-        sess = requests.Session()
-        sess.headers.update({'User-Agent': USER_AGENT})
-        return sess
+HEADERS = {
+    'User-Agent': USER_AGENT,
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7',
+}
+
+PROXY_PORT = 18999
+PROXY_SERVER = None
+
+class ProxyHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass  # Deaktiviere nervige Spam-Logs
+
+    def do_GET(self):
+        try:
+            # Pfad parsen: /proxy?url=ENCODED_URL&ref=ENCODED_REF
+            parsed_path = urllib.parse.urlparse(self.path)
+            params = urllib.parse.parse_qs(parsed_path.query)
+            
+            target_url = params.get('url', [None])[0]
+            referer = params.get('ref', [None])[0]
+
+            if not target_url:
+                self.send_error(400, "Missing target URL")
+                return
+
+            req_headers = {
+                'User-Agent': USER_AGENT,
+                'Referer': referer if referer else target_url,
+            }
+
+            # Leite Range-Header von Kodi/FFmpeg direkt an den Hoster weiter
+            if 'Range' in self.headers:
+                req_headers['Range'] = self.headers['Range']
+
+            resp = requests.get(target_url, headers=req_headers, stream=True, timeout=15)
+
+            self.send_response(resp.status_code)
+            for k, v in resp.headers.items():
+                if k.lower() in ['content-type', 'content-length', 'content-range', 'accept-ranges']:
+                    self.send_header(k, v)
+            self.end_headers()
+
+            for chunk in resp.iter_content(chunk_size=64 * 1024):
+                if chunk:
+                    self.wfile.write(chunk)
+
+        except Exception as e:
+            xbmc.log(f"[MyCumination Proxy Error]: {str(e)}", level=xbmc.LOGERROR)
+
+def start_proxy_if_needed():
+    global PROXY_SERVER
+    if PROXY_SERVER is None:
+        try:
+            PROXY_SERVER = HTTPServer(('127.0.0.1', PROXY_PORT), ProxyHandler)
+            t = threading.Thread(target=PROXY_SERVER.serve_forever)
+            t.daemon = True
+            t.start()
+            xbmc.log(f"[MyCumination] Proxy Server gestartet auf Port {PROXY_PORT}", level=xbmc.LOGINFO)
+        except Exception as e:
+            xbmc.log(f"[MyCumination Proxy Start Failed]: {str(e)}", level=xbmc.LOGERROR)
 
 def build_url(query):
     return BASE_URL + '?' + urllib.parse.urlencode(query)
@@ -68,8 +108,8 @@ def main_menu():
 
 def list_categories(categories_url):
     try:
-        session = get_session()
-        response = session.get(categories_url, timeout=15)
+        session = requests.Session()
+        response = session.get(categories_url, headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
         added_urls = set()
 
@@ -99,8 +139,8 @@ def list_categories(categories_url):
 def list_videos(category_url):
     try:
         xbmcplugin.setContent(HANDLE, 'videos')
-        session = get_session()
-        response = session.get(category_url, timeout=15)
+        session = requests.Session()
+        response = session.get(category_url, headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
         added_urls = set()
 
@@ -162,11 +202,6 @@ def extract_stream(session, page_url):
         if not src.startswith('http'):
             src = urllib.parse.urljoin(page_url, src)
 
-        if HAS_RESOLVEURL and resolveurl.HostedMediaFile(src).valid_url():
-            resolved = resolveurl.resolve(src)
-            if resolved:
-                return resolved
-
         try:
             sub = extract_stream(session, src)
             if sub:
@@ -178,24 +213,19 @@ def extract_stream(session, page_url):
 
 def play_video(video_url):
     try:
-        session = get_session()
+        start_proxy_if_needed()
+
+        session = requests.Session()
+        session.headers.update(HEADERS)
+        session.headers['Referer'] = video_url
+
         stream_url = extract_stream(session, video_url)
 
         if stream_url:
-            # Reiche die vom Cloudscraper generierten Cookies & UA an Kodi weiter
-            cookies = session.cookies.get_dict()
-            cookie_str = "; ".join([f"{k}={v}" for k, v in cookies.items()])
-            
-            headers = [
-                f"User-Agent={urllib.parse.quote(USER_AGENT)}",
-                f"Referer={urllib.parse.quote(video_url)}"
-            ]
-            if cookie_str:
-                headers.append(f"Cookie={urllib.parse.quote(cookie_str)}")
+            # Baue eine rein lokale URL, damit Kodi nur mit localhost kommuniziert
+            proxy_url = f"http://127.0.0.1:{PROXY_PORT}/proxy?url={urllib.parse.quote(stream_url)}&ref={urllib.parse.quote(video_url)}"
 
-            full_path = f"{stream_url}|{'&'.join(headers)}"
-
-            play_item = xbmcgui.ListItem(path=full_path)
+            play_item = xbmcgui.ListItem(path=proxy_url)
             play_item.setContentLookup(False)
             play_item.setMimeType('video/mp4')
 
