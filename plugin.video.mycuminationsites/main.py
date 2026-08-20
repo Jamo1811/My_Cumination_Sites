@@ -12,8 +12,11 @@ BASE_URL = sys.argv[0] if len(sys.argv) > 0 else ''
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept': '*/*',
     'Accept-Language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Sec-Fetch-Dest': 'video',
+    'Sec-Fetch-Mode': 'no-cors',
+    'Sec-Fetch-Site': 'cross-site',
 }
 
 def build_url(query):
@@ -127,7 +130,6 @@ def list_videos(category_url):
                 xbmcplugin.addDirectoryItem(handle=HANDLE, url=url, listitem=li, isFolder=False)
                 count += 1
 
-        # Nächste Seite (Pagination) suchen
         next_page_tag = soup.find('a', class_=re.compile(r'next|pagination-next'), href=True) or \
                         soup.find('a', string=re.compile(r'Nächste|Next|»|>', re.I), href=True)
         
@@ -151,30 +153,31 @@ def list_videos(category_url):
 
 def play_video(video_url):
     try:
-        headers = HEADERS.copy()
-        headers['Referer'] = video_url
-
         session = requests.Session()
-        response = session.get(video_url, headers=headers, timeout=15, allow_redirects=True)
+        req_headers = HEADERS.copy()
+        req_headers['Referer'] = video_url
+        session.headers.update(req_headers)
+
+        response = session.get(video_url, timeout=15, allow_redirects=True)
         html = response.text
         soup = BeautifulSoup(html, 'html.parser')
         
         stream_url = None
 
-        # 1. iFrame Einbettungen prüfen (falls das Video extern gehostet wird)
+        # 1. iFrame Einbettungen
         iframes = soup.find_all('iframe', src=True)
         for iframe in iframes:
             iframe_src = iframe['src']
-            if 'player' in iframe_src or 'embed' in iframe_src or 'nosofiles' in iframe_src:
+            if any(k in iframe_src for k in ['player', 'embed', 'nosofiles']):
                 if not iframe_src.startswith('http'):
                     iframe_src = urllib.parse.urljoin('https://darknessporn.com/', iframe_src)
                 try:
-                    iframe_res = session.get(iframe_src, headers={'Referer': video_url}, timeout=10)
+                    iframe_res = session.get(iframe_src, timeout=10)
                     html += iframe_res.text
                 except:
                     pass
 
-        # 2. Suche nach Video-Quellen (<video>, <source>)
+        # 2. Direktes Tag-Parsing (<video> / <source>)
         for tag in soup.find_all(['video', 'source']):
             src = tag.get('src') or tag.get('data-src') or ''
             if src and ('.mp4' in src.lower() or '.m3u8' in src.lower()):
@@ -182,7 +185,7 @@ def play_video(video_url):
                     stream_url = src
                     break
 
-        # 3. Direkt nach MP4/M3U8 Links im gesamten HTML suchen
+        # 3. RegEx MP4 / M3U8 Fallback
         if not stream_url:
             matches = re.findall(r'https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*', html)
             for m in matches:
@@ -193,16 +196,38 @@ def play_video(video_url):
         if stream_url:
             stream_url = urllib.parse.unquote(stream_url).replace('&amp;', '&')
             
-            # Vollständige Header an den Kodi-Player übergeben
-            headers_formatted = f"User-Agent={urllib.parse.quote(headers['User-Agent'])}&Referer={urllib.parse.quote(video_url)}"
-            final_stream_url = f"{stream_url}|{headers_formatted}"
+            # Validiere den Stream-Link durch einen HEAD-Request, um Weiterleitungen vorab aufzulösen
+            try:
+                head_res = session.head(stream_url, allow_redirects=True, timeout=8)
+                if head_res.url:
+                    stream_url = head_res.url
+            except:
+                pass
+
+            # Kodi Pipe-Header zusammenbauen
+            headers_payload = [
+                f"User-Agent={urllib.parse.quote(HEADERS['User-Agent'])}",
+                f"Referer={urllib.parse.quote(video_url)}"
+            ]
             
-            xbmc.log(f"[MyCumination] Final Stream URL: {final_stream_url}", level=xbmc.LOGINFO)
+            cookies_str = "; ".join([f"{c.name}={c.value}" for c in session.cookies])
+            if cookies_str:
+                headers_payload.append(f"Cookie={urllib.parse.quote(cookies_str)}")
+                
+            final_stream_url = f"{stream_url}|" + "&".join(headers_payload)
             
             play_item = xbmcgui.ListItem(path=final_stream_url)
+            
+            if '.m3u8' in stream_url:
+                play_item.setProperty('inputstream', 'inputstream.adaptive')
+                play_item.setProperty('inputstream.adaptive.manifest_type', 'hls')
+                play_item.setMimeType('application/vnd.apple.mpegurl')
+            else:
+                play_item.setMimeType('video/mp4')
+
             xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
         else:
-            xbmcgui.Dialog().notification('Fehler', 'Kein Stream-Link im Quelltext gefunden', xbmcgui.NOTIFICATION_ERROR)
+            xbmcgui.Dialog().notification('Fehler', 'Kein Stream-Link gefunden', xbmcgui.NOTIFICATION_ERROR)
             
     except Exception as e:
         xbmc.log(f"[MyCumination] Abspiel-Fehler: {str(e)}", level=xbmc.LOGERROR)
