@@ -36,7 +36,7 @@ def get_params():
 
 def main_menu():
     items = [
-        ('Alle Videos (Sitemap)', 'https://darknessporn.com/post-sitemap1.xml', 'list_sitemap_videos'),
+        ('Alle Videos', 'https://darknessporn.com/', 'list_videos'),
         ('Neueste Videos', 'https://darknessporn.com/?filter=latest', 'list_videos'),
         ('Most Viewed Videos', 'https://darknessporn.com/?filter=most_viewed', 'list_videos'),
         ('Top Bewertet', 'https://darknessporn.com/top-rated/', 'list_videos'),
@@ -46,48 +46,6 @@ def main_menu():
         url = build_url({'action': action, 'category_url': target_url})
         li = xbmcgui.ListItem(label=title)
         xbmcplugin.addDirectoryItem(handle=HANDLE, url=url, listitem=li, isFolder=True)
-    xbmcplugin.endOfDirectory(HANDLE)
-
-def list_sitemap_videos(sitemap_url):
-    try:
-        session = requests.Session()
-        response = session.get(sitemap_url, headers=HEADERS, timeout=15)
-        response.raise_for_status()
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        urls = soup.find_all('url')
-        
-        count = 0
-        for url_tag in urls:
-            loc = url_tag.find('loc')
-            if loc:
-                video_url = loc.text.strip()
-                
-                # Titel aus der URL generieren & säubern
-                slug = video_url.rstrip('/').split('/')[-1]
-                title = slug.replace('-', ' ').title()
-                
-                # Bild aus der Sitemap extrahieren (falls vorhanden)
-                image_tag = url_tag.find('image:loc') or url_tag.find('loc')
-                thumb = image_tag.text.strip() if image_tag and image_tag != loc else ''
-
-                if title and len(title) > 3:
-                    url = build_url({'action': 'play_video', 'video_url': video_url})
-                    li = xbmcgui.ListItem(label=title)
-                    if thumb:
-                        li.setArt({'thumb': thumb, 'icon': thumb})
-                    
-                    li.setProperty('IsPlayable', 'true')
-                    xbmcplugin.addDirectoryItem(handle=HANDLE, url=url, listitem=li, isFolder=False)
-                    count += 1
-
-        if count == 0:
-            xbmcgui.Dialog().notification('Hinweis', 'Keine Sitemap-Einträge gefunden', xbmcgui.NOTIFICATION_WARNING)
-
-    except Exception as e:
-        xbmc.log(f"[MyCumination] Fehler bei Sitemap: {str(e)}", level=xbmc.LOGERROR)
-        xbmcgui.Dialog().notification('Fehler', str(e), xbmcgui.NOTIFICATION_ERROR)
-
     xbmcplugin.endOfDirectory(HANDLE)
 
 def list_categories(categories_url):
@@ -230,8 +188,6 @@ def router():
 
     if not action:
         main_menu()
-    elif action == 'list_sitemap_videos':
-        list_sitemap_videos(url)
     elif action == 'list_categories':
         list_categories(url)
     elif action == 'list_videos':
