@@ -2,9 +2,6 @@ import sys
 import re
 import urllib.parse
 import requests
-import socket
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from bs4 import BeautifulSoup
 import xbmc
 import xbmcgui
@@ -18,59 +15,6 @@ HEADERS = {
     'Accept': '*/*',
     'Accept-Language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7',
 }
-
-PROXY_PORT = 8888
-TARGET_STREAM_URL = ""
-TARGET_REFERER = ""
-httpd_server = None
-
-class ProxyHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        global TARGET_STREAM_URL, TARGET_REFERER
-        if not TARGET_STREAM_URL:
-            self.send_error(404)
-            return
-
-        headers = HEADERS.copy()
-        if TARGET_REFERER:
-            headers['Referer'] = TARGET_REFERER
-        
-        if 'Range' in self.headers:
-            headers['Range'] = self.headers['Range']
-
-        try:
-            req = requests.get(TARGET_STREAM_URL, headers=headers, stream=True, timeout=15)
-            self.send_response(req.status_code)
-            
-            for key, val in req.headers.items():
-                if key.lower() in ['content-type', 'content-length', 'accept-ranges', 'content-range']:
-                    self.send_header(key, val)
-            self.end_headers()
-
-            for chunk in req.iter_content(chunk_size=64 * 1024):
-                if chunk:
-                    self.wfile.write(chunk)
-        except Exception as e:
-            xbmc.log(f"[MyCumination Proxy] Stream Fehler: {str(e)}", level=xbmc.LOGERROR)
-
-    def log_message(self, format, *args):
-        pass
-
-def start_proxy_server():
-    global httpd_server
-    try:
-        httpd_server = HTTPServer(('127.0.0.1', PROXY_PORT), ProxyHandler)
-        httpd_server.serve_forever()
-    except Exception as e:
-        xbmc.log(f"[MyCumination Proxy] Port bereits aktiv oder Fehler: {str(e)}", level=xbmc.LOGINFO)
-
-# Prüfe ob Proxy-Port frei ist, falls ja -> starten
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-result = sock.connect_ex(('127.0.0.1', PROXY_PORT))
-sock.close()
-if result != 0:
-    t = threading.Thread(target=start_proxy_server, daemon=True)
-    t.start()
 
 def build_url(query):
     return BASE_URL + '?' + urllib.parse.urlencode(query)
@@ -180,7 +124,7 @@ def list_videos(category_url):
                 if thumb:
                     li.setArt({'thumb': thumb, 'icon': thumb})
                 
-                # isFolder=False ohne IsPlayable Property, da wir direkt xbmc.Player nutzen
+                li.setProperty('IsPlayable', 'true')
                 xbmcplugin.addDirectoryItem(handle=HANDLE, url=url, listitem=li, isFolder=False)
                 count += 1
 
@@ -206,75 +150,81 @@ def list_videos(category_url):
     xbmcplugin.endOfDirectory(HANDLE)
 
 def play_video(video_url):
-    global TARGET_STREAM_URL, TARGET_REFERER
     try:
-        pDialog = xbmcgui.DialogProgress()
-        pDialog.create('Stream wird geladen', 'Verbindung wird aufgebaut...')
-
         session = requests.Session()
-        req_headers = HEADERS.copy()
-        req_headers['Referer'] = video_url
-        session.headers.update(req_headers)
+        session.headers.update(HEADERS)
+        session.headers['Referer'] = video_url
 
-        response = session.get(video_url, timeout=15, allow_redirects=True)
-        html = response.text
-        soup = BeautifulSoup(html, 'html.parser')
+        res = session.get(video_url, timeout=15)
+        soup = BeautifulSoup(res.text, 'html.parser')
         
-        stream_url = None
+        candidates = []
 
-        # 1. Tags
+        # Search HTML5 Tags
         for tag in soup.find_all(['video', 'source']):
             src = tag.get('src') or tag.get('data-src') or ''
             if src and ('.mp4' in src.lower() or '.m3u8' in src.lower()):
-                if not any(x in src.lower() for x in ['preview', 'trailer', 'short', 'thumb', 'sample']):
-                    stream_url = src
-                    break
+                candidates.append(src)
 
-        # 2. iFrames
-        if not stream_url:
-            for iframe in soup.find_all('iframe', src=True):
-                iframe_src = iframe['src']
-                if not iframe_src.startswith('http'):
-                    iframe_src = urllib.parse.urljoin('https://darknessporn.com/', iframe_src)
-                try:
-                    iframe_res = session.get(iframe_src, timeout=10)
-                    matches = re.findall(r'https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*', iframe_res.text)
-                    for m in matches:
-                        if not any(x in m.lower() for x in ['preview', 'short', 'thumb', 'trailer']):
-                            stream_url = m
-                            break
-                except:
-                    pass
+        # Search iFrames
+        for iframe in soup.find_all('iframe', src=True):
+            iframe_src = iframe['src']
+            if not iframe_src.startswith('http'):
+                iframe_src = urllib.parse.urljoin('https://darknessporn.com/', iframe_src)
+            try:
+                if_res = session.get(iframe_src, timeout=10)
+                # Extrahiere JS-Video-Quellen aus iFrames
+                found = re.findall(r'(https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*)', if_res.text)
+                candidates.extend(found)
+            except:
+                pass
 
-        # 3. RegEx
-        if not stream_url:
-            matches = re.findall(r'https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*', html)
-            for m in matches:
-                if not any(x in m.lower() for x in ['preview', 'short', 'thumb', 'trailer']):
-                    stream_url = m
-                    break
+        # Search JS/Regex in main page
+        found_js = re.findall(r'(https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*)', res.text)
+        candidates.extend(found_js)
 
-        pDialog.close()
+        # Filter out previews and thumbs
+        valid_url = None
+        for cand in candidates:
+            cand_clean = cand.replace('\\/', '/')
+            if not any(x in cand_clean.lower() for x in ['preview', 'trailer', 'short', 'thumb', 'sample']):
+                valid_url = cand_clean
+                break
 
-        if stream_url:
-            TARGET_STREAM_URL = stream_url
-            TARGET_REFERER = video_url
+        if valid_url:
+            # Stelle sicher, dass Session-Redirects aufgelöst werden
+            head_res = session.head(valid_url, allow_redirects=True, timeout=10)
+            final_media_url = head_res.url if head_res.status_code == 200 else valid_url
 
-            local_url = f"http://127.0.0.1:{PROXY_PORT}/video.mp4"
+            # Kodierung des URL-Tokens
+            if '?' in final_media_url:
+                base, query = final_media_url.split('?', 1)
+                query = query.replace('+', '%2B')
+                final_media_url = f"{base}?{query}"
+
+            # Aufbau der Header-Pipeline für den Kodi VideoPlayer
+            cookie_hdr = "; ".join([f"{c.name}={c.value}" for c in session.cookies])
+            headers_pipe = f"User-Agent={urllib.parse.quote(HEADERS['User-Agent'])}&Referer={urllib.parse.quote(video_url)}"
+            if cookie_hdr:
+                headers_pipe += f"&Cookie={urllib.parse.quote(cookie_hdr)}"
+
+            play_item = xbmcgui.ListItem(path=f"{final_media_url}|{headers_pipe}")
+            play_item.setProperty('IsPlayable', 'true')
             
-            play_item = xbmcgui.ListItem(path=local_url)
-            play_item.setMimeType('video/mp4')
-            
-            # Direktes Abspielen über die Kodi-Player Instanz erzwingen
-            xbmc.Player().play(local_url, play_item)
+            if '.m3u8' in final_media_url.lower():
+                play_item.setMimeType('application/vnd.apple.mpegurl')
+            else:
+                play_item.setMimeType('video/mp4')
+
+            xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
         else:
-            xbmcgui.Dialog().notification('Fehler', 'Kein Stream gefunden!', xbmcgui.NOTIFICATION_ERROR)
+            xbmcgui.Dialog().notification('Fehler', 'Kein valider Videostream gefunden', xbmcgui.NOTIFICATION_ERROR)
+            xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
 
     except Exception as e:
-        if 'pDialog' in locals():
-            pDialog.close()
-        xbmc.log(f"[MyCumination] Abspiel-Fehler: {str(e)}", level=xbmc.LOGERROR)
+        xbmc.log(f"[MyCumination] Fehler bei Wiedergabe: {str(e)}", level=xbmc.LOGERROR)
         xbmcgui.Dialog().notification('Fehler', str(e), xbmcgui.NOTIFICATION_ERROR)
+        xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
 
 def router():
     params = get_params()
