@@ -2,6 +2,7 @@ import sys
 import re
 import urllib.parse
 import requests
+import cloudscraper
 from bs4 import BeautifulSoup
 import xbmc
 import xbmcgui
@@ -16,6 +17,9 @@ HEADERS = {
     'User-Agent': USER_AGENT,
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7',
+    'DNT': '1',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
 }
 
 def build_url(query):
@@ -49,8 +53,8 @@ def main_menu():
 
 def list_categories(categories_url):
     try:
-        session = requests.Session()
-        response = session.get(categories_url, headers=HEADERS, timeout=15)
+        scraper = cloudscraper.create_scraper()
+        response = scraper.get(categories_url, headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
         added_urls = set()
 
@@ -80,8 +84,8 @@ def list_categories(categories_url):
 def list_videos(category_url):
     try:
         xbmcplugin.setContent(HANDLE, 'videos')
-        session = requests.Session()
-        response = session.get(category_url, headers=HEADERS, timeout=15)
+        scraper = cloudscraper.create_scraper()
+        response = scraper.get(category_url, headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
         added_urls = set()
 
@@ -131,19 +135,22 @@ def play_video(video_url):
     try:
         xbmc.log(f"[MyCumination] Versuche abzuspielen: {video_url}", xbmc.LOGINFO)
         
-        session = requests.Session()
-        session.headers.update(HEADERS)
+        # Cloudflare-Scraper mit korrekten Headern
+        scraper = cloudscraper.create_scraper()
+        scraper.headers.update(HEADERS)
         
-        response = session.get(video_url, headers=HEADERS, timeout=15)
+        # 1. Hauptseite aufrufen (für Cookies)
+        response = scraper.get(video_url, timeout=15)
         html = response.text
         
+        # 2. Stream-URL extrahieren
         soup = BeautifulSoup(html, 'html.parser')
         stream_url = None
         
-        # Methode 1: Video-Tag mit src
+        # Methode 1: Video-Tag
         video_tag = soup.find('video')
         if video_tag:
-            src = video_tag.get('src')
+            src = video_tag.get('src') or video_tag.get('data-src')
             if src:
                 stream_url = src
         
@@ -151,7 +158,7 @@ def play_video(video_url):
         if not stream_url:
             source_tag = soup.find('source')
             if source_tag:
-                src = source_tag.get('src')
+                src = source_tag.get('src') or source_tag.get('data-src')
                 if src:
                     stream_url = src
         
@@ -161,7 +168,7 @@ def play_video(video_url):
             if iframe and iframe.get('src'):
                 embed_url = iframe['src']
                 try:
-                    embed_response = session.get(embed_url, headers=HEADERS, timeout=10)
+                    embed_response = scraper.get(embed_url, timeout=10)
                     embed_html = embed_response.text
                     embed_soup = BeautifulSoup(embed_html, 'html.parser')
                     embed_video = embed_soup.find('video')
@@ -175,7 +182,6 @@ def play_video(video_url):
             patterns = [
                 r'(https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*)',
                 r'(https?://[^\s\'"]+/get_file/[^\s\'"]+)',
-                r'(https?://[^\s\'"]+\.php\?[^\s\'"]*video[^\s\'"]*)'
             ]
             for pattern in patterns:
                 matches = re.findall(pattern, html)
@@ -193,53 +199,60 @@ def play_video(video_url):
             if json_matches:
                 stream_url = json_matches[0]
         
-        if stream_url:
-            stream_url = stream_url.replace('\\/', '/')
-            if not stream_url.startswith('http'):
-                if stream_url.startswith('//'):
-                    stream_url = 'https:' + stream_url
-                else:
-                    stream_url = urllib.parse.urljoin('https://darknessporn.com/', stream_url)
-            
-            cookie_str = '; '.join([f"{c.name}={c.value}" for c in session.cookies])
-            headers_to_send = {
-                'User-Agent': USER_AGENT,
-                'Referer': video_url,
-                'Accept': 'video/mp4,video/webm,video/*',
-                'Connection': 'keep-alive'
-            }
-            if cookie_str:
-                headers_to_send['Cookie'] = cookie_str
-            
-            header_pipe = urllib.parse.urlencode(headers_to_send)
-            final_stream_url = f"{stream_url}|{header_pipe}"
-            
-            try:
-                play_item = xbmcgui.ListItem(path=final_stream_url)
-                play_item.setContentLookup(False)
-                play_item.setMimeType('video/mp4')
-                
-                if stream_url.endswith('.m3u8'):
-                    play_item.setProperty('inputstream', 'inputstream.adaptive')
-                    play_item.setProperty('inputstream.adaptive.manifest_type', 'hls')
-                
-                xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
-                xbmc.log("[MyCumination] Wiedergabe gestartet", xbmc.LOGINFO)
-                
-            except Exception as play_error:
-                xbmc.log(f"[MyCumination] Play-Fehler: {play_error}", xbmc.LOGERROR)
-                fallback_item = xbmcgui.ListItem(path=stream_url)
-                fallback_item.setContentLookup(False)
-                xbmcplugin.setResolvedUrl(HANDLE, True, fallback_item)
-                
-        else:
+        if not stream_url:
             xbmc.log("[MyCumination] Kein Stream-Link gefunden", xbmc.LOGERROR)
             xbmcgui.Dialog().notification('Fehler', 'Kein Stream-Link auf der Seite gefunden', xbmcgui.NOTIFICATION_ERROR, 5000)
             xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
-            
+            return
+        
+        # 3. Stream-URL bereinigen
+        stream_url = stream_url.replace('\\/', '/')
+        if not stream_url.startswith('http'):
+            if stream_url.startswith('//'):
+                stream_url = 'https:' + stream_url
+            else:
+                stream_url = urllib.parse.urljoin('https://darknessporn.com/', stream_url)
+        
+        xbmc.log(f"[MyCumination] Stream-URL: {stream_url}", xbmc.LOGINFO)
+        
+        # 4. Cookies aus der Session holen
+        cookie_str = '; '.join([f"{c.name}={c.value}" for c in scraper.cookies])
+        
+        # 5. Header für die Video-Anfrage
+        headers_to_send = {
+            'User-Agent': USER_AGENT,
+            'Referer': video_url,
+            'Accept': 'video/mp4,video/webm,video/*',
+            'Accept-Language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Connection': 'keep-alive',
+            'Range': 'bytes=0-',
+        }
+        if cookie_str:
+            headers_to_send['Cookie'] = cookie_str
+        
+        # 6. Header in URL-Pipe umwandeln
+        header_pipe = urllib.parse.urlencode(headers_to_send)
+        final_stream_url = f"{stream_url}|{header_pipe}"
+        
+        xbmc.log(f"[MyCumination] Finale URL: {final_stream_url[:150]}...", xbmc.LOGINFO)
+        
+        # 7. Abspielen
+        play_item = xbmcgui.ListItem(path=final_stream_url)
+        play_item.setContentLookup(False)
+        play_item.setMimeType('video/mp4')
+        
+        # HLS-Unterstützung
+        if stream_url.endswith('.m3u8'):
+            play_item.setProperty('inputstream', 'inputstream.adaptive')
+            play_item.setProperty('inputstream.adaptive.manifest_type', 'hls')
+        
+        # Wichtig: Kein Fallback – direkt abspielen
+        xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
+        xbmc.log("[MyCumination] Wiedergabe gestartet", xbmc.LOGINFO)
+        
     except Exception as e:
-        xbmc.log(f"[MyCumination] Allgemeiner Fehler: {str(e)}", xbmc.LOGERROR)
-        xbmcgui.Dialog().notification('Fehler', f'Wiedergabefehler: {str(e)[:50]}', xbmcgui.NOTIFICATION_ERROR, 5000)
+        xbmc.log(f"[MyCumination] Fehler: {str(e)}", xbmc.LOGERROR)
+        xbmcgui.Dialog().notification('Fehler', str(e)[:80], xbmcgui.NOTIFICATION_ERROR, 5000)
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
 
 def router():
