@@ -1,7 +1,7 @@
 import sys
 import re
 import urllib.parse
-import requests
+import cloudscraper
 from bs4 import BeautifulSoup
 import xbmc
 import xbmcgui
@@ -49,8 +49,10 @@ def main_menu():
 
 def list_categories(categories_url):
     try:
-        session = requests.Session()
-        response = session.get(categories_url, headers=HEADERS, timeout=15)
+        scraper = cloudscraper.create_scraper(
+            browser={'browser': 'chrome', 'platform': 'android', 'desktop': False}
+        )
+        response = scraper.get(categories_url, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
         added_urls = set()
 
@@ -80,8 +82,10 @@ def list_categories(categories_url):
 def list_videos(category_url):
     try:
         xbmcplugin.setContent(HANDLE, 'videos')
-        session = requests.Session()
-        response = session.get(category_url, headers=HEADERS, timeout=15)
+        scraper = cloudscraper.create_scraper(
+            browser={'browser': 'chrome', 'platform': 'android', 'desktop': False}
+        )
+        response = scraper.get(category_url, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
         added_urls = set()
 
@@ -129,13 +133,14 @@ def list_videos(category_url):
 
 def play_video(video_url):
     try:
-        session = requests.Session()
+        # Cloudscraper erzeugen, um die Anti-Bot-Challenge zu umgehen
+        scraper = cloudscraper.create_scraper(
+            browser={'browser': 'chrome', 'platform': 'android', 'desktop': False}
+        )
         
-        # 1. Hauptseite aufrufen, um die notwendigen Session-Cookies abzugreifen
-        response = session.get(video_url, headers=HEADERS, timeout=10)
+        response = scraper.get(video_url, timeout=15)
         html = response.text
 
-        # 2. Direkten Video-Link aus dem HTML-Code (wie im DevTools Inspector) auslesen
         soup = BeautifulSoup(html, 'html.parser')
         video_tag = soup.find('video', class_=re.compile(r'xp-Player-video'))
         
@@ -151,32 +156,31 @@ def play_video(video_url):
                     break
 
         if stream_url:
-            # 3. Cookies aus der Session auslesen und zusammenbauen
-            cookie_str = '; '.join([f"{c.name}={c.value}" for c in session.cookies])
+            # Cloudflare Session-Cookies mitgeben
+            cookies = scraper.cookies.get_dict()
+            cookie_str = '; '.join([f"{k}={v}" for k, v in cookies.items()])
             
             headers_to_send = {
-                'User-Agent': USER_AGENT,
+                'User-Agent': scraper.headers.get('User-Agent', USER_AGENT),
                 'Referer': video_url,
             }
             if cookie_str:
                 headers_to_send['Cookie'] = cookie_str
             
-            # Pipe-Syntax für FFmpeg / Kodi-Player aufbauen
             header_pipe = urllib.parse.urlencode(headers_to_send)
             final_stream_url = f"{stream_url}|{header_pipe}"
 
-            # 4. Abspieldatei übergeben mit deaktiviertem Pre-Scan
             play_item = xbmcgui.ListItem(path=final_stream_url)
             play_item.setContentLookup(False)
             play_item.setMimeType('video/mp4')
 
             xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
         else:
-            xbmcgui.Dialog().notification('Fehler', 'Kein Stream-Link im Code gefunden', xbmcgui.NOTIFICATION_ERROR)
+            xbmcgui.Dialog().notification('Fehler', 'Kein Stream-Link gefunden', xbmcgui.NOTIFICATION_ERROR)
             xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
 
     except Exception as e:
-        xbmc.log(f"[MyCumination ERROR]: {str(e)}", level=xbmc.LOGERROR)
+        xbmc.log(f"[Addon ERROR]: {str(e)}", level=xbmc.LOGERROR)
         xbmcgui.Dialog().notification('Fehler', str(e), xbmcgui.NOTIFICATION_ERROR)
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
 
