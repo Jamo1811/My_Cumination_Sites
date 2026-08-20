@@ -1,6 +1,5 @@
 import sys
 import re
-import base64
 import urllib.parse
 import requests
 from bs4 import BeautifulSoup
@@ -39,32 +38,6 @@ def get_params():
                 if len(splitparams) == 2:
                     param[splitparams[0]] = urllib.parse.unquote_plus(splitparams[1])
     return param
-
-def unpack_js(packed_code):
-    try:
-        pattern = r"\}\s*\('(.*)',\s*(\d+),\s*(\d+),\s*'(.*)'\.split\('\|'\)"
-        match = re.search(pattern, packed_code)
-        if not match:
-            return ""
-        
-        payload, radix, count, symtab = match.groups()
-        radix = int(radix)
-        count = int(count)
-        symtab = symtab.split('|')
-
-        def replace_word(m):
-            word = m.group(0)
-            try:
-                idx = int(word, radix) if radix <= 36 else int(word)
-            except ValueError:
-                idx = -1
-            if idx >= 0 and idx < len(symtab) and symtab[idx]:
-                return symtab[idx]
-            return word
-
-        return re.sub(r'\b\w+\b', replace_word, payload)
-    except Exception:
-        return ""
 
 def main_menu():
     items = [
@@ -164,13 +137,6 @@ def extract_stream(session, page_url):
     res = session.get(page_url, timeout=10)
     html = res.text
 
-    if "eval(function(p,a,c,k,e,d)" in html:
-        unpacked = unpack_js(html)
-        matches = re.findall(r'(https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*)', unpacked)
-        for m in matches:
-            if not any(x in m.lower() for x in ['preview', 'trailer', 'short', 'thumb']):
-                return m.replace('\\/', '/')
-
     matches = re.findall(r'(https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*)', html)
     for m in matches:
         clean = m.replace('\\/', '/')
@@ -206,23 +172,26 @@ def play_video(video_url):
         stream_url = extract_stream(session, video_url)
 
         if stream_url:
-            # Sauber maskierter Header-String für Kodi FFmpeg Engine
-            encoded_ua = urllib.parse.quote(USER_AGENT)
-            encoded_ref = urllib.parse.quote(video_url)
+            head_res = session.head(stream_url, allow_redirects=True, timeout=10)
+            final_stream_url = head_res.url
             
-            final_path = f"{stream_url}|User-Agent={encoded_ua}&Referer={encoded_ref}"
+            cookie_str = "; ".join([f"{k}={v}" for k, v in session.cookies.get_dict().items()])
 
-            play_item = xbmcgui.ListItem(path=final_path)
-            
-            # Wichtig für Android/Kodi: Header zusätzlich als Property an den Player binden
-            play_item.setProperty('http-header', f'User-Agent={USER_AGENT}&Referer={video_url}')
+            headers_dict = {
+                'User-Agent': USER_AGENT,
+                'Referer': video_url,
+            }
+            if cookie_str:
+                headers_dict['Cookie'] = cookie_str
 
-            if '.m3u8' in stream_url.lower():
-                play_item.setMimeType('application/vnd.apple.mpegurl')
-                play_item.setProperty('inputstream', 'inputstream.adaptive')
-                play_item.setProperty('inputstream.adaptive.manifest_type', 'hls')
-            else:
-                play_item.setMimeType('video/mp4')
+            headers_pipe = "&".join([f"{k}={urllib.parse.quote(v)}" for k, v in headers_dict.items()])
+            play_path = f"{final_stream_url}|{headers_pipe}"
+
+            xbmc.log(f"[MyCumination] Play Path: {play_path}", level=xbmc.LOGINFO)
+
+            play_item = xbmcgui.ListItem(path=play_path)
+            play_item.setContentLookup(False)
+            play_item.setMimeType('video/mp4')
 
             xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
         else:
@@ -230,6 +199,7 @@ def play_video(video_url):
             xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
 
     except Exception as e:
+        xbmc.log(f"[MyCumination ERROR]: {str(e)}", level=xbmc.LOGERROR)
         xbmcgui.Dialog().notification('Fehler', str(e), xbmcgui.NOTIFICATION_ERROR)
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
 
