@@ -12,7 +12,7 @@ BASE_URL = sys.argv[0] if len(sys.argv) > 0 else ''
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept': '*/*',
     'Accept-Language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7',
 }
 
@@ -162,7 +162,7 @@ def play_video(video_url):
         
         stream_url = None
 
-        # 1. Direct Tag Parsing (<video> / <source>)
+        # 1. Tags
         for tag in soup.find_all(['video', 'source']):
             src = tag.get('src') or tag.get('data-src') or ''
             if src and ('.mp4' in src.lower() or '.m3u8' in src.lower()):
@@ -170,7 +170,7 @@ def play_video(video_url):
                     stream_url = src
                     break
 
-        # 2. iFrames prüfen
+        # 2. iFrames
         if not stream_url:
             for iframe in soup.find_all('iframe', src=True):
                 iframe_src = iframe['src']
@@ -186,7 +186,7 @@ def play_video(video_url):
                 except:
                     pass
 
-        # 3. RegEx Direkt-Suche im Haupt-HTML
+        # 3. RegEx
         if not stream_url:
             matches = re.findall(r'https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*', html)
             for m in matches:
@@ -195,23 +195,24 @@ def play_video(video_url):
                     break
 
         if stream_url:
-            stream_url = urllib.parse.unquote(stream_url).replace('&amp;', '&')
-            
-            # Zeige die aufgelöste Adresse vor der Übergabe an Kodi
-            xbmcgui.Dialog().ok('Gefundene Stream-URL', stream_url)
-            
+            # Maskiere das + Zeichen im URL-Query-String
+            if '?' in stream_url:
+                base_part, query_part = stream_url.split('?', 1)
+                query_part = query_part.replace('+', '%2B')
+                stream_url = f"{base_part}?{query_part}"
+
+            # Kodi Header Formatierung
             headers_payload = f"User-Agent={urllib.parse.quote(HEADERS['User-Agent'])}&Referer={urllib.parse.quote(video_url)}"
+            
+            cookies_str = "; ".join([f"{c.name}={c.value}" for c in session.cookies])
+            if cookies_str:
+                headers_payload += f"&Cookie={urllib.parse.quote(cookies_str)}"
+                
             final_stream_url = f"{stream_url}|{headers_payload}"
             
             play_item = xbmcgui.ListItem(path=final_stream_url)
             play_item.setProperty('IsPlayable', 'true')
-            
-            if '.m3u8' in stream_url:
-                play_item.setProperty('inputstream', 'inputstream.adaptive')
-                play_item.setProperty('inputstream.adaptive.manifest_type', 'hls')
-                play_item.setMimeType('application/vnd.apple.mpegurl')
-            else:
-                play_item.setMimeType('video/mp4')
+            play_item.setMimeType('video/mp4')
 
             xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
         else:
@@ -219,7 +220,8 @@ def play_video(video_url):
             xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
 
     except Exception as e:
-        xbmcgui.Dialog().notification('Exception', str(e), xbmcgui.NOTIFICATION_ERROR)
+        xbmc.log(f"[MyCumination] Abspiel-Fehler: {str(e)}", level=xbmc.LOGERROR)
+        xbmcgui.Dialog().notification('Fehler', str(e), xbmcgui.NOTIFICATION_ERROR)
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
 
 def router():
