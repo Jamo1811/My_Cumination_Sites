@@ -37,7 +37,7 @@ def main_menu():
     items = [
         ('Alle Videos', 'https://darknessporn.com/', 'list_videos'),
         ('Neueste Videos', 'https://darknessporn.com/?filter=latest', 'list_videos'),
-        ('Most Viewed Videos', 'https://darknessporn.com/?filter=most_viewed', 'list_videos'),
+        ('Meistgesehen', 'https://darknessporn.com/?filter=most_viewed', 'list_videos'),
         ('Top Bewertet', 'https://darknessporn.com/?filter=top-rated', 'list_videos'),
         ('Kategorien', 'https://darknessporn.com/categories/', 'list_categories'),
     ]
@@ -129,55 +129,117 @@ def list_videos(category_url):
 
 def play_video(video_url):
     try:
+        xbmc.log(f"[MyCumination] Versuche abzuspielen: {video_url}", xbmc.LOGINFO)
+        
         session = requests.Session()
+        session.headers.update(HEADERS)
         
-        # 1. Hauptseite aufrufen, um die notwendigen Session-Cookies abzugreifen
-        response = session.get(video_url, headers=HEADERS, timeout=10)
+        response = session.get(video_url, headers=HEADERS, timeout=15)
         html = response.text
-
-        # 2. Direkten Video-Link aus dem HTML-Code (wie im DevTools Inspector) auslesen
-        soup = BeautifulSoup(html, 'html.parser')
-        video_tag = soup.find('video', class_=re.compile(r'xp-Player-video'))
         
+        soup = BeautifulSoup(html, 'html.parser')
         stream_url = None
-        if video_tag and video_tag.get('src'):
-            stream_url = video_tag['src']
-        else:
-            matches = re.findall(r'(https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*)', html)
-            for m in matches:
-                clean = m.replace('\\/', '/')
-                if not any(x in clean.lower() for x in ['preview', 'trailer', 'short', 'thumb']):
-                    stream_url = clean
+        
+        # Methode 1: Video-Tag mit src
+        video_tag = soup.find('video')
+        if video_tag:
+            src = video_tag.get('src')
+            if src:
+                stream_url = src
+        
+        # Methode 2: source-Tag
+        if not stream_url:
+            source_tag = soup.find('source')
+            if source_tag:
+                src = source_tag.get('src')
+                if src:
+                    stream_url = src
+        
+        # Methode 3: iframe
+        if not stream_url:
+            iframe = soup.find('iframe')
+            if iframe and iframe.get('src'):
+                embed_url = iframe['src']
+                try:
+                    embed_response = session.get(embed_url, headers=HEADERS, timeout=10)
+                    embed_html = embed_response.text
+                    embed_soup = BeautifulSoup(embed_html, 'html.parser')
+                    embed_video = embed_soup.find('video')
+                    if embed_video and embed_video.get('src'):
+                        stream_url = embed_video['src']
+                except:
+                    pass
+        
+        # Methode 4: Regex
+        if not stream_url:
+            patterns = [
+                r'(https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*)',
+                r'(https?://[^\s\'"]+/get_file/[^\s\'"]+)',
+                r'(https?://[^\s\'"]+\.php\?[^\s\'"]*video[^\s\'"]*)'
+            ]
+            for pattern in patterns:
+                matches = re.findall(pattern, html)
+                for m in matches:
+                    clean = m.replace('\\/', '/')
+                    if not any(x in clean.lower() for x in ['preview', 'trailer', 'thumb', 'poster']):
+                        stream_url = clean
+                        break
+                if stream_url:
                     break
-
+        
+        # Methode 5: JSON
+        if not stream_url:
+            json_matches = re.findall(r'file\s*:\s*["\']([^"\']+\.(?:mp4|m3u8)[^"\']*)["\']', html)
+            if json_matches:
+                stream_url = json_matches[0]
+        
         if stream_url:
-            # 3. Cookies aus der Session auslesen und zusammenbauen
-            cookie_str = '; '.join([f"{c.name}={c.value}" for c in session.cookies])
+            stream_url = stream_url.replace('\\/', '/')
+            if not stream_url.startswith('http'):
+                if stream_url.startswith('//'):
+                    stream_url = 'https:' + stream_url
+                else:
+                    stream_url = urllib.parse.urljoin('https://darknessporn.com/', stream_url)
             
+            cookie_str = '; '.join([f"{c.name}={c.value}" for c in session.cookies])
             headers_to_send = {
                 'User-Agent': USER_AGENT,
                 'Referer': video_url,
+                'Accept': 'video/mp4,video/webm,video/*',
+                'Connection': 'keep-alive'
             }
             if cookie_str:
                 headers_to_send['Cookie'] = cookie_str
             
-            # Pipe-Syntax für FFmpeg / Kodi-Player aufbauen
             header_pipe = urllib.parse.urlencode(headers_to_send)
             final_stream_url = f"{stream_url}|{header_pipe}"
-
-            # 4. Abspieldatei übergeben mit deaktiviertem Pre-Scan
-            play_item = xbmcgui.ListItem(path=final_stream_url)
-            play_item.setContentLookup(False)
-            play_item.setMimeType('video/mp4')
-
-            xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
+            
+            try:
+                play_item = xbmcgui.ListItem(path=final_stream_url)
+                play_item.setContentLookup(False)
+                play_item.setMimeType('video/mp4')
+                
+                if stream_url.endswith('.m3u8'):
+                    play_item.setProperty('inputstream', 'inputstream.adaptive')
+                    play_item.setProperty('inputstream.adaptive.manifest_type', 'hls')
+                
+                xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
+                xbmc.log("[MyCumination] Wiedergabe gestartet", xbmc.LOGINFO)
+                
+            except Exception as play_error:
+                xbmc.log(f"[MyCumination] Play-Fehler: {play_error}", xbmc.LOGERROR)
+                fallback_item = xbmcgui.ListItem(path=stream_url)
+                fallback_item.setContentLookup(False)
+                xbmcplugin.setResolvedUrl(HANDLE, True, fallback_item)
+                
         else:
-            xbmcgui.Dialog().notification('Fehler', 'Kein Stream-Link im Code gefunden', xbmcgui.NOTIFICATION_ERROR)
+            xbmc.log("[MyCumination] Kein Stream-Link gefunden", xbmc.LOGERROR)
+            xbmcgui.Dialog().notification('Fehler', 'Kein Stream-Link auf der Seite gefunden', xbmcgui.NOTIFICATION_ERROR, 5000)
             xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
-
+            
     except Exception as e:
-        xbmc.log(f"[MyCumination ERROR]: {str(e)}", level=xbmc.LOGERROR)
-        xbmcgui.Dialog().notification('Fehler', str(e), xbmcgui.NOTIFICATION_ERROR)
+        xbmc.log(f"[MyCumination] Allgemeiner Fehler: {str(e)}", xbmc.LOGERROR)
+        xbmcgui.Dialog().notification('Fehler', f'Wiedergabefehler: {str(e)[:50]}', xbmcgui.NOTIFICATION_ERROR, 5000)
         xbmcplugin.setResolvedUrl(HANDLE, False, xbmcgui.ListItem())
 
 def router():
