@@ -51,8 +51,8 @@ def list_videos(category_url):
         response = requests.get(category_url, headers=HEADERS, timeout=10)
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Flexibles Suchen nach Video-Containern
-        videos = soup.select('article, div.post, div.video-item, div.item')
+        # KolorTube Theme spezifische Selektoren
+        videos = soup.find_all('article') or soup.select('div.thumb-block, div.post, div.video-block')
         
         for video in videos:
             a_tag = video.find('a')
@@ -60,14 +60,20 @@ def list_videos(category_url):
                 continue
             
             video_url = a_tag.get('href')
-            title = a_tag.get('title') or a_tag.text.strip()
             
+            # Titel aus a-tag, title-Attribut oder h2/h3 auslesen
+            title = a_tag.get('title')
+            if not title:
+                heading = video.find(['h2', 'h3', 'span'])
+                title = heading.text.strip() if heading else a_tag.text.strip()
+            
+            # Vorschaubild (Thumb) auslesen
             img_tag = video.find('img')
             thumb = ''
             if img_tag:
-                thumb = img_tag.get('data-src') or img_tag.get('src') or ''
+                thumb = img_tag.get('data-src') or img_tag.get('data-original') or img_tag.get('src') or ''
             
-            if video_url and title:
+            if video_url and title and len(title) > 2:
                 url = build_url({'action': 'play_video', 'video_url': video_url})
                 li = xbmcgui.ListItem(label=title)
                 if thumb:
@@ -87,16 +93,15 @@ def play_video(video_url):
         response = requests.get(video_url, headers=HEADERS, timeout=10)
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Stream-Quellen extrahieren
         stream_url = None
         
-        # 1. Direkter Video-Tag
+        # 1. Video Tag
         video_element = soup.find('video')
         if video_element:
             source = video_element.find('source')
             stream_url = source.get('src') if source else video_element.get('src')
         
-        # 2. Falls ein Iframe verwendet wird
+        # 2. Iframe Fallback
         if not stream_url:
             iframe = soup.find('iframe')
             if iframe:
@@ -106,7 +111,7 @@ def play_video(video_url):
             play_item = xbmcgui.ListItem(path=stream_url)
             xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
         else:
-            xbmcgui.Dialog().notification('Fehler', 'Kein abspielbarer Stream gefunden', xbmcgui.NOTIFICATION_ERROR)
+            xbmcgui.Dialog().notification('Fehler', 'Kein Stream gefunden', xbmcgui.NOTIFICATION_ERROR)
     except Exception as e:
         xbmc.log(f"[MyCumination] Abspiel-Fehler: {str(e)}", level=xbmc.LOGERROR)
 
