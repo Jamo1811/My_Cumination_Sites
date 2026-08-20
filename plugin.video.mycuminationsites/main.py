@@ -1,53 +1,49 @@
+# -*- coding: utf-8 -*-
 import sys
 import os
 from urllib.parse import parse_qsl
 import xbmcgui
 import xbmcplugin
 
-# Den Pfad zu resources/lib bekannt machen, damit Python deine Module findet
 ADDON_DIR = os.path.dirname(os.path.abspath(__file__))
 LIB_DIR = os.path.join(ADDON_DIR, 'resources', 'lib')
-sys.path.append(LIB_DIR)
+if LIB_DIR not in sys.path:
+    sys.path.append(LIB_DIR)
 
-# Jetzt können wir dein Scraper-Modul importieren
-try:
-    import darknessporn
-except ImportError:
-    darknessporn = None
+from darknessporn import CustomSite
 
 HANDLE = int(sys.argv[1])
-BASE_URL = sys.argv[0]
-
-def build_url(query):
-    return f"{BASE_URL}?{query}"
-
-def show_main_menu():
-    """Erstellt das Hauptmenü"""
-    list_item = xbmcgui.ListItem(label="Darknessporn")
-    url = build_url("site=darknessporn")
-    xbmcplugin.addDirectoryItem(handle=HANDLE, url=url, listitem=list_item, isFolder=True)
-    xbmcplugin.endOfDirectory(HANDLE)
-
-def show_darknessporn_menu():
-    """Ruft die Logik aus deiner darknessporn.py auf"""
-    if darknessporn:
-        # Hier rufen wir die Funktionen aus deiner darknessporn.py auf
-        # Bsp: darknessporn.get_videos()
-        dialog = xbmcgui.Dialog()
-        dialog.ok("Erfolg", "Darknessporn-Modul erfolgreich geladen!")
-    else:
-        dialog = xbmcgui.Dialog()
-        dialog.ok("Fehler", "darknessporn.py konnte nicht gefunden werden.")
 
 def router(paramstring):
     params = dict(parse_qsl(paramstring))
+    site = CustomSite()
     
-    if not params:
-        show_main_menu()
-    elif params.get("site") == "darknessporn":
-        show_darknessporn_menu()
+    action = params.get("action")
+    url = params.get("url")
+
+    if not action:
+        site.get_menu()
+        xbmcplugin.endOfDirectory(HANDLE)
+        
+    elif action == "list_videos":
+        site.list_videos(url)
+        xbmcplugin.endOfDirectory(HANDLE)
+
+    elif action == "search_video":
+        site.search_video()
+        xbmcplugin.endOfDirectory(HANDLE)
+
+    elif action == "switch_language":
+        site.switch_language()
+
+    elif action == "play_video":
+        stream_url = site.play_video(url)
+        if stream_url:
+            play_item = xbmcgui.ListItem(path=stream_url)
+            xbmcplugin.setResolvedUrl(HANDLE, True, listitem=play_item)
+        else:
+            dialog = xbmcgui.Dialog()
+            dialog.notification("Fehler", "Stream-URL konnte nicht extrahiert werden.", xbmcgui.NOTIFICATION_ERROR, 3000)
 
 if __name__ == "__main__":
     router(sys.argv[2][1:])
-
-
