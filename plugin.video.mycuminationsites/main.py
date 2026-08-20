@@ -36,15 +36,58 @@ def get_params():
 
 def main_menu():
     items = [
+        ('Alle Videos (Sitemap)', 'https://darknessporn.com/post-sitemap1.xml', 'list_sitemap_videos'),
         ('Neueste Videos', 'https://darknessporn.com/?filter=latest', 'list_videos'),
         ('Most Viewed Videos', 'https://darknessporn.com/?filter=most_viewed', 'list_videos'),
-        ('Top Bewertet', 'https://darknessporn.com/?filter=top-rated', 'list_videos'),
+        ('Top Bewertet', 'https://darknessporn.com/top-rated/', 'list_videos'),
         ('Kategorien', 'https://darknessporn.com/categories/', 'list_categories'),
     ]
     for title, target_url, action in items:
         url = build_url({'action': action, 'category_url': target_url})
         li = xbmcgui.ListItem(label=title)
         xbmcplugin.addDirectoryItem(handle=HANDLE, url=url, listitem=li, isFolder=True)
+    xbmcplugin.endOfDirectory(HANDLE)
+
+def list_sitemap_videos(sitemap_url):
+    try:
+        session = requests.Session()
+        response = session.get(sitemap_url, headers=HEADERS, timeout=15)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        urls = soup.find_all('url')
+        
+        count = 0
+        for url_tag in urls:
+            loc = url_tag.find('loc')
+            if loc:
+                video_url = loc.text.strip()
+                
+                # Titel aus der URL generieren & säubern
+                slug = video_url.rstrip('/').split('/')[-1]
+                title = slug.replace('-', ' ').title()
+                
+                # Bild aus der Sitemap extrahieren (falls vorhanden)
+                image_tag = url_tag.find('image:loc') or url_tag.find('loc')
+                thumb = image_tag.text.strip() if image_tag and image_tag != loc else ''
+
+                if title and len(title) > 3:
+                    url = build_url({'action': 'play_video', 'video_url': video_url})
+                    li = xbmcgui.ListItem(label=title)
+                    if thumb:
+                        li.setArt({'thumb': thumb, 'icon': thumb})
+                    
+                    li.setProperty('IsPlayable', 'true')
+                    xbmcplugin.addDirectoryItem(handle=HANDLE, url=url, listitem=li, isFolder=False)
+                    count += 1
+
+        if count == 0:
+            xbmcgui.Dialog().notification('Hinweis', 'Keine Sitemap-Einträge gefunden', xbmcgui.NOTIFICATION_WARNING)
+
+    except Exception as e:
+        xbmc.log(f"[MyCumination] Fehler bei Sitemap: {str(e)}", level=xbmc.LOGERROR)
+        xbmcgui.Dialog().notification('Fehler', str(e), xbmcgui.NOTIFICATION_ERROR)
+
     xbmcplugin.endOfDirectory(HANDLE)
 
 def list_categories(categories_url):
@@ -90,7 +133,6 @@ def list_videos(category_url):
         response.raise_for_status()
         
         soup = BeautifulSoup(response.text, 'html.parser')
-        
         count = 0
         added_urls = set()
 
@@ -140,42 +182,35 @@ def play_video(video_url):
         
         stream_url = None
 
-        # 1. HTML5 Video / Source Tags auslesen
-        for tag in soup.find_all(['source', 'video']):
+        # 1. Auslesen von <video src="..."> oder <source src="..."> Tags
+        for tag in soup.find_all(['video', 'source']):
             src = tag.get('src') or tag.get('data-src') or ''
-            if src and ('.mp4' in src.lower() or '.m3u8' in src.lower()):
-                if not any(x in src.lower() for x in ['preview', 'trailer', 'short', 'gif', 'thumb']):
+            if src and '.mp4' in src.lower():
+                if not any(x in src.lower() for x in ['preview', 'trailer', 'short', 'thumb', 'gif']):
                     stream_url = src
                     break
 
-        # 2. Regex-Suche nach direkten .mp4 / .m3u8 URLs im Quelltext
+        # 2. Suche nach URLs mit nosofiles CDN
         if not stream_url:
-            matches = re.findall(r'https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*', html)
-            for m in matches:
-                if not any(x in m.lower() for x in ['preview', 'trailer', 'short', 'gif', 'thumb', 'main.vtt']):
+            noso_matches = re.findall(r'https?://[^\s\'"]*nosofiles\.com[^\s\'"]*\.mp4[^\s\'"]*', html)
+            if noso_matches:
+                stream_url = noso_matches[0]
+
+        # 3. Poster-Bild Fallback (_poster.jpg zu .mp4 umwandeln)
+        if not stream_url:
+            poster_match = re.search(r'https?://[^\s\'"]+output_[^\s\'"]+?_poster\.jpg[^\s\'"]*', html)
+            if poster_match:
+                stream_url = re.sub(r'_poster\.jpg.*$', '.mp4', poster_match.group(0))
+
+        # 4. Allgemeine MP4-Suche als Fallback
+        if not stream_url:
+            all_matches = re.findall(r'https?://[^\s\'"]+\.mp4[^\s\'"]*', html)
+            for m in all_matches:
+                if not any(x in m.lower() for x in ['preview', 'trailer', 'short', 'thumb', 'gif']):
                     stream_url = m
                     break
 
-        # 3. Falls Embed-Iframe verwendet wird
-        if not stream_url:
-            iframe = soup.find('iframe')
-            if iframe and iframe.get('src'):
-                iframe_url = iframe.get('src')
-                if iframe_url.startswith('//'):
-                    iframe_url = 'https:' + iframe_url
-                
-                iframe_resp = session.get(iframe_url, headers=headers, timeout=10)
-                iframe_matches = re.findall(r'https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*', iframe_resp.text)
-                for m in iframe_matches:
-                    if not any(x in m.lower() for x in ['preview', 'trailer', 'short', 'gif', 'thumb']):
-                        stream_url = m
-                        break
-
-        # Stream an Kodi übergeben
         if stream_url:
-            if not stream_url.startswith('http'):
-                stream_url = urllib.parse.urljoin('https://darknessporn.com/', stream_url)
-                
             stream_url = urllib.parse.unquote(stream_url).replace('&amp;', '&')
             final_stream_url = f"{stream_url}|User-Agent={urllib.parse.quote(headers['User-Agent'])}&Referer={urllib.parse.quote(video_url)}"
             
@@ -195,6 +230,8 @@ def router():
 
     if not action:
         main_menu()
+    elif action == 'list_sitemap_videos':
+        list_sitemap_videos(url)
     elif action == 'list_categories':
         list_categories(url)
     elif action == 'list_videos':
