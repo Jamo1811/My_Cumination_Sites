@@ -195,7 +195,7 @@ def play_video(video_url):
                     break
 
         if stream_url:
-            # Maskiere das + Zeichen im Query-String
+            # Maskiere das + Zeichen im Token
             if '?' in stream_url:
                 base_part, query_part = stream_url.split('?', 1)
                 query_part = query_part.replace('+', '%2B')
@@ -203,11 +203,18 @@ def play_video(video_url):
 
             play_item = xbmcgui.ListItem(path=stream_url)
             
-            # Nutze Inputstream Adaptive für korrekte Header-Übergabe
-            play_item.setProperty('inputstream', 'inputstream.adaptive')
-            play_item.setProperty('inputstream.adaptive.stream_headers', f"User-Agent={HEADERS['User-Agent']}&Referer={video_url}")
-            play_item.setMimeType('video/mp4')
+            if '.m3u8' in stream_url:
+                play_item.setProperty('inputstream', 'inputstream.adaptive')
+                play_item.setProperty('inputstream.adaptive.manifest_type', 'hls')
+                play_item.setProperty('inputstream.adaptive.stream_headers', f"User-Agent={HEADERS['User-Agent']}&Referer={video_url}")
+                play_item.setMimeType('application/vnd.apple.mpegurl')
+            else:
+                # Direkter Fallback ohne Adaptive für normale MP4
+                headers_payload = f"User-Agent={urllib.parse.quote(HEADERS['User-Agent'])}&Referer={urllib.parse.quote(video_url)}"
+                play_item.setPath(f"{stream_url}|{headers_payload}")
+                play_item.setMimeType('video/mp4')
 
+            play_item.setProperty('IsPlayable', 'true')
             xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
         else:
             xbmcgui.Dialog().notification('Fehler', 'Kein Stream gefunden!', xbmcgui.NOTIFICATION_ERROR)
