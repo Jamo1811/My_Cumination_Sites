@@ -36,14 +36,52 @@ def get_params():
 
 def main_menu():
     items = [
-        ('Neueste Videos', 'https://darknessporn.com/?filter=latest'),
-        ('Most Viewed Videos', 'https://darknessporn.com/?filter=most_viewed'),
-        ('Top Bewertet', 'https://darknessporn.com/?filter=top-rated'),
+        ('Neueste Videos', 'https://darknessporn.com/?filter=latest', 'list_videos'),
+        ('Most Viewed Videos', 'https://darknessporn.com/?filter=most_viewed', 'list_videos'),
+        ('Top Bewertet', 'https://darknessporn.com/?filter=top-rated', 'list_videos'),
+        ('Kategorien', 'https://darknessporn.com/categories/', 'list_categories'),
     ]
-    for title, target_url in items:
-        url = build_url({'action': 'list_videos', 'category_url': target_url})
+    for title, target_url, action in items:
+        url = build_url({'action': action, 'category_url': target_url})
         li = xbmcgui.ListItem(label=title)
         xbmcplugin.addDirectoryItem(handle=HANDLE, url=url, listitem=li, isFolder=True)
+    xbmcplugin.endOfDirectory(HANDLE)
+
+def list_categories(categories_url):
+    try:
+        session = requests.Session()
+        response = session.get(categories_url, headers=HEADERS, timeout=15)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        added_urls = set()
+
+        for a_tag in soup.find_all('a', href=True):
+            href = a_tag['href']
+            
+            # Filter für Kategorie-Links
+            if ('/category/' in href or '/tag/' in href or '/categories/' in href) and href not in added_urls:
+                if not href.startswith('http'):
+                    href = urllib.parse.urljoin('https://darknessporn.com/', href)
+                
+                title = a_tag.text.strip() or a_tag.get('title') or ''
+                img_tag = a_tag.find('img')
+                thumb = ''
+                if img_tag:
+                    thumb = img_tag.get('data-src') or img_tag.get('src') or ''
+                
+                if title and len(title) > 2 and href != categories_url:
+                    added_urls.add(href)
+                    url = build_url({'action': 'list_videos', 'category_url': href})
+                    li = xbmcgui.ListItem(label=title)
+                    if thumb:
+                        li.setArt({'thumb': thumb, 'icon': thumb})
+                    xbmcplugin.addDirectoryItem(handle=HANDLE, url=url, listitem=li, isFolder=True)
+
+    except Exception as e:
+        xbmc.log(f"[MyCumination] Fehler bei Kategorien: {str(e)}", level=xbmc.LOGERROR)
+        xbmcgui.Dialog().notification('Fehler', str(e), xbmcgui.NOTIFICATION_ERROR)
+
     xbmcplugin.endOfDirectory(HANDLE)
 
 def list_videos(category_url):
@@ -63,7 +101,7 @@ def list_videos(category_url):
             if not video_url.startswith('http'):
                 video_url = urllib.parse.urljoin('https://darknessporn.com/', video_url)
 
-            if video_url in added_urls or '?filter=' in video_url or '/category/' in video_url:
+            if video_url in added_urls or '?filter=' in video_url or video_url.endswith('/categories/'):
                 continue
 
             img_tag = a_tag.find('img')
@@ -102,7 +140,6 @@ def play_video(video_url):
         
         stream_url = None
 
-        # 1. Post-ID aus KolarTube Theme ermitteln
         post_id_match = re.search(r'postid-(\d+)', html) or re.search(r'data-post-id=["\'](\d+)["\']', html)
         
         if post_id_match:
@@ -110,21 +147,15 @@ def play_video(video_url):
             ajax_url = 'https://darknessporn.com/wp-admin/admin-ajax.php'
             ajax_headers = headers.copy()
             ajax_headers['X-Requested-With'] = 'XMLHttpRequest'
-            ajax_headers['Content-Type'] = 'application/x-www-form-encoding; charset=UTF-8'
             
-            # AJAX-Abfrage an WordPress senden, um HTML des Players zu laden
             ajax_resp = session.post(ajax_url, data={'action': 'get_player_html', 'post_id': post_id}, headers=ajax_headers, timeout=10)
             if ajax_resp.status_code == 200:
-                player_html = ajax_resp.text
-                
-                # Direct Stream Extract (mp4/m3u8)
-                urls = re.findall(r'https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*', player_html)
+                urls = re.findall(r'https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*', ajax_resp.text)
                 for u in urls:
                     if not any(x in u.lower() for x in ['preview', 'trailer', 'short', 'gif', 'thumb']):
                         stream_url = u
                         break
 
-        # 2. Fallback: Direkte Suche im Quelltext der Hauptseite
         if not stream_url:
             urls = re.findall(r'https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*', html)
             for u in urls:
@@ -132,7 +163,6 @@ def play_video(video_url):
                     stream_url = u
                     break
 
-        # 3. Stream abspielen
         if stream_url:
             stream_url = urllib.parse.unquote(stream_url).replace('&amp;', '&')
             final_stream_url = f"{stream_url}|User-Agent={urllib.parse.quote(headers['User-Agent'])}&Referer={urllib.parse.quote(video_url)}"
@@ -152,6 +182,8 @@ def router():
 
     if not action:
         main_menu()
+    elif action == 'list_categories':
+        list_categories(url)
     elif action == 'list_videos':
         list_videos(url)
     elif action == 'play_video':
