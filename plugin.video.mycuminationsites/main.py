@@ -2,7 +2,6 @@ import sys
 import re
 import urllib.request
 import urllib.parse
-import json
 import xbmc
 import xbmcgui
 import xbmcplugin
@@ -23,6 +22,7 @@ def log(msg):
     xbmc.log(f'{addon_name}: {msg}', xbmc.LOGINFO)
 
 def fetch_html(url):
+    """Lädt eine HTML-Seite"""
     req = urllib.request.Request(url)
     req.add_header('User-Agent', USER_AGENT)
     req.add_header('Referer', REFERER)
@@ -30,36 +30,30 @@ def fetch_html(url):
         with urllib.request.urlopen(req, timeout=15) as response:
             return response.read().decode('utf-8', errors='ignore')
     except Exception as e:
-        log(f'Fehler beim Laden: {e}')
+        log(f'Fehler: {e}')
         return None
 
-def extract_all_urls(html):
-    """Findet ALLE URLs in der Seite"""
-    urls = []
-    # Suche nach iframe
-    iframes = re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.IGNORECASE)
-    urls.extend(iframes)
-    
-    # Suche nach Video-URLs
-    videos = re.findall(r'(https?://[^\s"\']+\.(?:m3u8|mp4|ts)[^\s"\']*)', html, re.IGNORECASE)
-    urls.extend(videos)
-    
-    # Suche nach JavaScript-Variablen
-    js_urls = re.findall(r'(?:file|src|video_url|url)\s*[:=]\s*["\']([^"\']+\.(?:m3u8|mp4)[^"\']*)["\']', html, re.IGNORECASE)
-    urls.extend(js_urls)
-    
-    # Suche nach embed-Links
-    embeds = re.findall(r'(https?://[^\s"\']+/(?:embed|e|v)/[^\s"\']+)', html, re.IGNORECASE)
-    urls.extend(embeds)
-    
-    return list(set(urls))  # Doppelte entfernen
+def extract_video_url(html):
+    """Extrahiert die MP4-URL aus der Seite"""
+    # Suche nach nosofiles.com URLs (wie in deinem Screenshot)
+    patterns = [
+        r'(https?://st1\.nosofiles\.com/[^\s"\']+\.mp4[^\s"\']*)',
+        r'(https?://[^\s"\']+\.mp4[^\s"\']*)',
+        r'(https?://[^\s"\']+/trailer\.mp4[^\s"\']*)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, html, re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return None
 
-def try_resolveurl(video_url):
+def try_resolveurl(url):
+    """Versucht ResolveURL"""
     try:
         from resolveurl import resolveurl
-        resolved = resolveurl.resolve(video_url)
+        resolved = resolveurl.resolve(url)
         if resolved:
-            log(f'ResolveURL erfolgreich: {resolved}')
+            log(f'ResolveURL: {resolved}')
             return resolved
     except:
         pass
@@ -69,7 +63,7 @@ def try_resolveurl(video_url):
 
 def show_video_list():
     """Zeigt eine Liste von Videos"""
-    # Ersetze diese URLs mit echten Links von darknessporn.com
+    # HIER MÜSSEN ECHTE VIDEO-LINKS VON DARKNESSPORN.COM REIN!
     videos = [
         {'title': '🔴 Defloration Real Teen', 'url': 'https://darknessporn.com/56493-defloration-real-teen-young-teenies/'},
         {'title': '🔴 Test Video 2', 'url': 'https://darknessporn.com/anderes-video/'},
@@ -86,7 +80,7 @@ def show_video_list():
 # ==================== ABSPIELEN ====================
 
 def play_video(video_url):
-    log(f'Starte mit URL: {video_url}')
+    log(f'Starte: {video_url}')
     
     # 1. Seite laden
     html = fetch_html(video_url)
@@ -94,38 +88,23 @@ def play_video(video_url):
         xbmcgui.Dialog().ok(addon_name, 'Seite konnte nicht geladen werden')
         return
     
-    # 2. Alle URLs aus der Seite extrahieren
-    found_urls = extract_all_urls(html)
-    log(f'Gefundene URLs: {found_urls}')
+    # 2. Direkt nach MP4-URL suchen
+    final_url = extract_video_url(html)
     
-    # 3. Versuche jede URL mit ResolveURL
-    final_url = None
-    for url in found_urls:
-        if 'iframe' in url.lower() or 'embed' in url.lower():
-            # Iframe/Embed laden und dort weitersuchen
-            iframe_html = fetch_html(url)
-            if iframe_html:
-                more_urls = extract_all_urls(iframe_html)
-                log(f'Im Iframe gefunden: {more_urls}')
-                for u in more_urls:
-                    resolved = try_resolveurl(u)
-                    if resolved:
-                        final_url = resolved
-                        break
-        else:
-            resolved = try_resolveurl(url)
-            if resolved:
-                final_url = resolved
-                break
-        
-        if final_url:
-            break
-    
-    # 4. Wenn nichts gefunden: Debug-Dialog anzeigen
+    # 3. Wenn keine MP4: ResolveURL versuchen
     if not final_url:
-        # Zeige alle gefundenen URLs im Dialog
-        if found_urls:
-            msg = 'Gefundene URLs:\n' + '\n'.join(found_urls[:5])
+        # Suche nach Embed-Link
+        embed_match = re.search(r'(https?://darknessporn\.com/embed/\d+)', html)
+        if embed_match:
+            log(f'Embed gefunden: {embed_match.group(1)}')
+            final_url = try_resolveurl(embed_match.group(1))
+    
+    # 4. Wenn immer noch nichts: Dialog mit gefundenen URLs
+    if not final_url:
+        # Extrahiere alle URLs für Debug
+        all_urls = re.findall(r'(https?://[^\s"\']+\.(?:mp4|m3u8)[^\s"\']*)', html)
+        if all_urls:
+            msg = 'Gefundene URLs:\n' + '\n'.join(all_urls[:3])
             xbmcgui.Dialog().ok(addon_name, msg)
         else:
             xbmcgui.Dialog().ok(addon_name, 'Keine Video-URL gefunden!')
@@ -137,10 +116,14 @@ def play_video(video_url):
     list_item = xbmcgui.ListItem()
     list_item.setPath(final_url)
     
+    # User-Agent encoden
     encoded_ua = urllib.parse.quote(USER_AGENT)
     headers = f'User-Agent={encoded_ua}&Referer={urllib.parse.quote(REFERER)}'
     list_item.setProperty('inputstream.adaptive.stream_headers', headers)
+    list_item.setProperty('http-user-agent', USER_AGENT)
+    list_item.setProperty('http-referer', REFERER)
     
+    # Für HLS-Streams
     if '.m3u8' in final_url:
         list_item.setProperty('inputstream', 'inputstream.adaptive')
         list_item.setProperty('inputstream.adaptive.manifest_type', 'hls')
