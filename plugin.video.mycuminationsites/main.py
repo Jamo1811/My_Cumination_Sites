@@ -102,45 +102,37 @@ def play_video(video_url):
         
         stream_url = None
 
-        # 1. KolarTube JS-Variablen
-        js_matches = re.findall(r'(?:video_url|file|src|stream_url)\s*[:=]\s*["\'](https?://[^\'\"]+\.(?:mp4|m3u8)[^\'\"]*)["\']', html, re.IGNORECASE)
-        for match in js_matches:
-            if not any(x in match.lower() for x in ['preview', 'trailer', 'short', 'gif', 'taser', 'thumb']):
-                stream_url = match
-                break
-
-        # 2. HTML5 Video Container
-        if not stream_url:
-            soup = BeautifulSoup(html, 'html.parser')
-            for src_tag in soup.find_all(['source', 'video']):
-                link = src_tag.get('src') or src_tag.get('data-src') or ''
-                if link and not any(x in link.lower() for x in ['preview', 'trailer', 'short', 'gif']):
-                    stream_url = link
-                    break
-
-        # 3. Regex Fallback
-        if not stream_url:
-            matches = re.findall(r'https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*', html)
-            for match in matches:
-                if not any(x in match.lower() for x in ['preview', 'trailer', 'short', 'gif', 'taser', 'thumb']):
-                    stream_url = match
-                    break
-
-        # 4. Embedded iframe Player
-        if not stream_url:
-            soup = BeautifulSoup(html, 'html.parser')
-            iframe = soup.find('iframe')
-            if iframe and iframe.get('src'):
-                iframe_url = iframe.get('src')
-                if iframe_url.startswith('//'):
-                    iframe_url = 'https:' + iframe_url
-                iframe_resp = session.get(iframe_url, headers=headers, timeout=10)
-                iframe_matches = re.findall(r'https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*', iframe_resp.text)
-                for match in iframe_matches:
-                    if not any(x in match.lower() for x in ['preview', 'trailer', 'short', 'gif']):
-                        stream_url = match
+        # 1. Post-ID aus KolarTube Theme ermitteln
+        post_id_match = re.search(r'postid-(\d+)', html) or re.search(r'data-post-id=["\'](\d+)["\']', html)
+        
+        if post_id_match:
+            post_id = post_id_match.group(1)
+            ajax_url = 'https://darknessporn.com/wp-admin/admin-ajax.php'
+            ajax_headers = headers.copy()
+            ajax_headers['X-Requested-With'] = 'XMLHttpRequest'
+            ajax_headers['Content-Type'] = 'application/x-www-form-encoding; charset=UTF-8'
+            
+            # AJAX-Abfrage an WordPress senden, um HTML des Players zu laden
+            ajax_resp = session.post(ajax_url, data={'action': 'get_player_html', 'post_id': post_id}, headers=ajax_headers, timeout=10)
+            if ajax_resp.status_code == 200:
+                player_html = ajax_resp.text
+                
+                # Direct Stream Extract (mp4/m3u8)
+                urls = re.findall(r'https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*', player_html)
+                for u in urls:
+                    if not any(x in u.lower() for x in ['preview', 'trailer', 'short', 'gif', 'thumb']):
+                        stream_url = u
                         break
 
+        # 2. Fallback: Direkte Suche im Quelltext der Hauptseite
+        if not stream_url:
+            urls = re.findall(r'https?://[^\s\'"]+\.(?:mp4|m3u8)[^\s\'"]*', html)
+            for u in urls:
+                if not any(x in u.lower() for x in ['preview', 'trailer', 'short', 'gif', 'thumb']):
+                    stream_url = u
+                    break
+
+        # 3. Stream abspielen
         if stream_url:
             stream_url = urllib.parse.unquote(stream_url).replace('&amp;', '&')
             final_stream_url = f"{stream_url}|User-Agent={urllib.parse.quote(headers['User-Agent'])}&Referer={urllib.parse.quote(video_url)}"
