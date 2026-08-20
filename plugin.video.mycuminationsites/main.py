@@ -206,10 +206,15 @@ def play_video(video_url):
         stream_url = extract_stream(session, video_url)
 
         if stream_url:
-            # Reiner Stream ohne Pipe-Header für maximale Kodi-Kompatibilität
-            play_item = xbmcgui.ListItem(path=stream_url)
+            # Sauber maskierter Header-String für Kodi FFmpeg Engine
+            encoded_ua = urllib.parse.quote(USER_AGENT)
+            encoded_ref = urllib.parse.quote(video_url)
             
-            # Übermittle Header direkt an den Kodi-Mediaplayer
+            final_path = f"{stream_url}|User-Agent={encoded_ua}&Referer={encoded_ref}"
+
+            play_item = xbmcgui.ListItem(path=final_path)
+            
+            # Wichtig für Android/Kodi: Header zusätzlich als Property an den Player binden
             play_item.setProperty('http-header', f'User-Agent={USER_AGENT}&Referer={video_url}')
 
             if '.m3u8' in stream_url.lower():
