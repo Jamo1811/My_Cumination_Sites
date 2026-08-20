@@ -10,7 +10,9 @@ HANDLE = int(sys.argv[1])
 BASE_URL = sys.argv[0]
 
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'de,en-US;q=0.7,en;q=0.3'
 }
 
 def get_params():
@@ -49,7 +51,8 @@ def list_videos(category_url):
         response = requests.get(category_url, headers=HEADERS, timeout=10)
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        videos = soup.find_all('article') or soup.find_all('div', class_='post')
+        # Flexibles Suchen nach Video-Containern
+        videos = soup.select('article, div.post, div.video-item, div.item')
         
         for video in videos:
             a_tag = video.find('a')
@@ -60,7 +63,9 @@ def list_videos(category_url):
             title = a_tag.get('title') or a_tag.text.strip()
             
             img_tag = video.find('img')
-            thumb = img_tag.get('src') or img_tag.get('data-src') if img_tag else ''
+            thumb = ''
+            if img_tag:
+                thumb = img_tag.get('data-src') or img_tag.get('src') or ''
             
             if video_url and title:
                 url = build_url({'action': 'play_video', 'video_url': video_url})
@@ -73,7 +78,7 @@ def list_videos(category_url):
                 
     except Exception as e:
         xbmc.log(f"[MyCumination] Fehler beim Laden: {str(e)}", level=xbmc.LOGERROR)
-        xbmcgui.Dialog().notification('Fehler', 'Seite konnte nicht geladen werden', xbmcgui.NOTIFICATION_ERROR)
+        xbmcgui.Dialog().notification('Fehler', 'Konnte Videos nicht laden', xbmcgui.NOTIFICATION_ERROR)
 
     xbmcplugin.endOfDirectory(HANDLE)
 
@@ -82,17 +87,26 @@ def play_video(video_url):
         response = requests.get(video_url, headers=HEADERS, timeout=10)
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        video_element = soup.find('video') or soup.find('source')
+        # Stream-Quellen extrahieren
         stream_url = None
         
+        # 1. Direkter Video-Tag
+        video_element = soup.find('video')
         if video_element:
-            stream_url = video_element.get('src')
-            
+            source = video_element.find('source')
+            stream_url = source.get('src') if source else video_element.get('src')
+        
+        # 2. Falls ein Iframe verwendet wird
+        if not stream_url:
+            iframe = soup.find('iframe')
+            if iframe:
+                stream_url = iframe.get('src')
+
         if stream_url:
             play_item = xbmcgui.ListItem(path=stream_url)
             xbmcplugin.setResolvedUrl(HANDLE, True, play_item)
         else:
-            xbmcgui.Dialog().notification('Fehler', 'Kein Stream gefunden', xbmcgui.NOTIFICATION_ERROR)
+            xbmcgui.Dialog().notification('Fehler', 'Kein abspielbarer Stream gefunden', xbmcgui.NOTIFICATION_ERROR)
     except Exception as e:
         xbmc.log(f"[MyCumination] Abspiel-Fehler: {str(e)}", level=xbmc.LOGERROR)
 
